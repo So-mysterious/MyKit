@@ -119,7 +119,7 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
     const points = chartData.map((d, i) => `${getX(i)},${getY(d.value)}`).join(" ");
 
     return (
-        <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm h-full flex flex-col">
+        <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm h-full flex flex-col overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between mb-6 shrink-0">
                 <div>

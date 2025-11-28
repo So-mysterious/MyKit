@@ -171,8 +171,9 @@ export default function PeriodicTasksPage() {
         setForm((prev) => ({ ...prev, accountId: accountData[0].id }));
       }
     } catch (error) {
-      console.error(error);
-      alert("加载数据失败");
+      console.error("加载周期任务失败:", error);
+      const message = error instanceof Error ? error.message : JSON.stringify(error);
+      alert(`加载数据失败: ${message}\n\n如果是数据库字段缺失，请在 Supabase 执行 schema.sql 中的 ALTER TABLE 语句。`);
     } finally {
       setLoading(false);
     }
