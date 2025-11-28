@@ -40,8 +40,8 @@ export interface Database {
           due_date?: number | null
           credit_limit?: number | null
         }
+        Relationships: []
       }
-      // ... (其他表保持不变，因为没有 JSON 字段变动)
       transactions: {
         Row: {
           id: string
@@ -82,6 +82,7 @@ export interface Database {
           nominal_currency?: string | null
           transfer_group_id?: string | null
         }
+        Relationships: []
       }
       snapshots: {
         Row: {
@@ -108,6 +109,7 @@ export interface Database {
           created_at?: string
           type?: string
         }
+        Relationships: []
       }
       periodic_tasks: {
         Row: {
@@ -143,6 +145,7 @@ export interface Database {
           is_active?: boolean
           created_at?: string
         }
+        Relationships: []
       }
       reconciliation_issues: {
         Row: {
@@ -193,6 +196,7 @@ export interface Database {
           created_at?: string
           resolved_at?: string | null
         }
+        Relationships: []
       }
       bookkeeping_settings: {
         Row: {
@@ -234,6 +238,7 @@ export interface Database {
           transfer_color?: string
           updated_at?: string
         }
+        Relationships: []
       }
       bookkeeping_tags: {
         Row: {
@@ -263,6 +268,7 @@ export interface Database {
           created_at?: string
           updated_at?: string
         }
+        Relationships: []
       }
       transaction_tag_links: {
         Row: {
@@ -280,6 +286,7 @@ export interface Database {
           tag_id?: string
           created_at?: string
         }
+        Relationships: []
       }
     }
     Views: {
@@ -291,7 +298,17 @@ export interface Database {
           is_active: boolean
           from_settings: boolean
         }
+        Relationships: []
       }
     }
+    Functions: Record<string, never>
+    Enums: Record<string, never>
   }
 }
+
+// 导出常用行类型
+export type SnapshotRow = Database['public']['Tables']['snapshots']['Row'];
+export type AccountRow = Database['public']['Tables']['accounts']['Row'];
+export type TransactionRow = Database['public']['Tables']['transactions']['Row'];
+export type PeriodicTaskRow = Database['public']['Tables']['periodic_tasks']['Row'];
+export type ReconciliationIssueRow = Database['public']['Tables']['reconciliation_issues']['Row'];

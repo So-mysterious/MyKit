@@ -1,9 +1,11 @@
 import { supabase } from '@/lib/supabase';
 import { calculateBalance } from './logic';
 import { AccountType, Currency } from '@/lib/constants';
-import { Database, Json } from '@/types/database';
+import { Database, Json, SnapshotRow, TransactionRow, ReconciliationIssueRow } from '@/types/database';
 
-// ... (Existing Accounts functions) ...
+// --- Accounts ---
+type AccountRowDB = Database['public']['Tables']['accounts']['Row'];
+
 export async function getAccountsWithBalance() {
   const { data: accounts, error } = await supabase
     .from('accounts')
@@ -14,7 +16,7 @@ export async function getAccountsWithBalance() {
   if (!accounts) return [];
 
   const accountsWithBalance = await Promise.all(
-    accounts.map(async (acc) => {
+    (accounts as AccountRowDB[]).map(async (acc) => {
       const balance = await calculateBalance(supabase, acc.id, new Date());
       return {
         ...acc,
@@ -151,7 +153,7 @@ export async function getTransactions({ page = 0, filters = {} }: { page?: numbe
     .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
 
   if (filters.type && filters.type !== 'all') {
-    query = query.eq('type', filters.type);
+    query = query.eq('type', filters.type as 'income' | 'expense' | 'transfer');
   }
   if (filters.accountId) {
     if (Array.isArray(filters.accountId)) {
@@ -235,7 +237,7 @@ export async function createSnapshot(data: { account_id: string; balance: number
   if (error) throw error;
 }
 
-export async function getSnapshotsByIds(ids: string[]) {
+export async function getSnapshotsByIds(ids: string[]): Promise<SnapshotRow[]> {
   if (!ids.length) return [];
   const unique = Array.from(new Set(ids.filter(Boolean)));
   if (!unique.length) return [];
@@ -246,14 +248,11 @@ export async function getSnapshotsByIds(ids: string[]) {
     .in('id', unique as string[]);
 
   if (error) throw error;
-  return data || [];
+  return (data || []) as SnapshotRow[];
 }
 
 // --- Reconciliation ---
 
-type SnapshotRow = Database['public']['Tables']['snapshots']['Row'];
-type TransactionRow = Database['public']['Tables']['transactions']['Row'];
-type ReconciliationIssueRow = Database['public']['Tables']['reconciliation_issues']['Row'];
 type TagRow = Database['public']['Tables']['bookkeeping_tags']['Row'];
 type BookkeepingSettingsRow = Database['public']['Tables']['bookkeeping_settings']['Row'];
 export type BookkeepingKind = 'expense' | 'income' | 'transfer';
@@ -311,7 +310,7 @@ export async function runReconciliationCheck({
   endDate,
   source = 'manual',
 }: RunReconciliationParams) {
-  const { data: snapshots, error: snapshotError } = await supabase
+  const { data: snapshotsData, error: snapshotError } = await supabase
     .from('snapshots')
     .select('*')
     .eq('account_id', accountId)
@@ -321,7 +320,9 @@ export async function runReconciliationCheck({
 
   await supabase.from('reconciliation_issues').delete().eq('account_id', accountId);
 
-  if (!snapshots || snapshots.length < 2) {
+  const snapshots = (snapshotsData || []) as SnapshotRow[];
+  
+  if (snapshots.length < 2) {
     return { inserted: 0, segments: [] as ReconciliationSegment[], message: '缺少足够的时点快照，无法查账' };
   }
 
@@ -341,7 +342,7 @@ export async function runReconciliationCheck({
   const firstDate = scopedSnapshots[0].date;
   const lastDate = scopedSnapshots[scopedSnapshots.length - 1].date;
 
-  const { data: transactions, error: txError } = await supabase
+  const { data: transactionsData, error: txError } = await supabase
     .from('transactions')
     .select('*')
     .eq('account_id', accountId)
@@ -350,6 +351,7 @@ export async function runReconciliationCheck({
     .order('date', { ascending: true });
 
   if (txError) throw txError;
+  const transactions = (transactionsData || []) as TransactionRow[];
 
   const segments: ReconciliationSegment[] = [];
 
