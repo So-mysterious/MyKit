@@ -1,4 +1,31 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MyKit - 个人工具箱
+
+这是一个基于 Next.js 开发的个人工具箱项目，旨在提供便捷的日常管理功能。目前主要包含记账模块。
+
+## 技术栈
+
+- **框架**: Next.js (App Router)
+- **语言**: TypeScript
+- **样式**: Tailwind CSS
+- **后端**: Supabase
+- **组件库**: Radix UI (Headless) + 自定义 UI 组件
+
+## 模块
+
+### 1. 记账 (Bookkeeping)
+核心功能：
+- **账户管理**: 支持多账户类型（现金、储蓄卡、信用卡、投资等）。
+- **流水记录**: 收入、支出、转账记录。
+- **仪表盘**: 
+    - 年度/月度热力图 (GitHub Style)
+    - 交易趋势图 (SVG Line Chart)
+    - 支出/收入构成图 (SVG Donut Chart)
+- **余额校准**: 周期性账户余额快照与校准。
+
+## 开发说明
+
+- **前端优先**: 优先实现交互和 UI，逻辑内聚于前端。
+- **自定义组件**: 核心图表组件采用 SVG/CSS 原生实现，不依赖第三方重型图表库。
 
 ## Getting Started
 
@@ -8,29 +35,4 @@ First, run the development server:
 npm run dev
 # or
 yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.

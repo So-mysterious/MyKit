@@ -1,3 +1,5 @@
+"use client";
+
 import { Sidebar } from "@/components/Sidebar";
 import { CalendarDays, ListTodo } from "lucide-react";
 
@@ -20,4 +22,3 @@ export default function CalendarLayout({
     </div>
   );
 }
-

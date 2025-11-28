@@ -1,20 +1,171 @@
+"use client";
+
+import * as React from "react";
+import { AccountCard } from "@/components/AccountCard";
+import { Button } from "@/components/ui/button";
+import { TransactionModal } from "@/components/TransactionModal";
+import { SnapshotDialog } from "@/components/SnapshotDialog";
+import { AccountModal } from "@/components/AccountModal";
+import { Edit, Trash2, MoreVertical, Loader2, RefreshCw } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { getAccountsWithBalance, deleteAccount } from "@/lib/bookkeeping/actions";
+import { AccountType, Currency } from "@/lib/constants";
+
+interface AccountWithBalance {
+  id: string;
+  name: string;
+  type: string;
+  currency: string;
+  balance: number;
+  credit_limit?: number | null;
+}
+
 export default function AccountsPage() {
+  const [accounts, setAccounts] = React.useState<AccountWithBalance[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [refreshing, setRefreshing] = React.useState(false);
+
+  const fetchAccounts = React.useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
+    
+    try {
+      // Add timestamp to prevent caching if necessary, though actions.ts logic is fresh
+      const data = await getAccountsWithBalance();
+      setAccounts(data as unknown as AccountWithBalance[]);
+    } catch (error) {
+      console.error("Failed to fetch accounts:", error);
+      alert("加载账户失败");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchAccounts();
+  }, [fetchAccounts]);
+
+  const handleDelete = async (id: string, name: string) => {
+    if (confirm(`确定要删除账户 "${name}" 吗？所有的流水记录也会被删除！`)) {
+      try {
+        await deleteAccount(id);
+        fetchAccounts(); // Refresh
+      } catch (error) {
+        alert("删除失败");
+      }
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold tracking-tight">账户管理</h1>
-      <div className="grid gap-4 md:grid-cols-3">
-        {/* Placeholder Account Card */}
-        <div className="rounded-xl border bg-white text-card-foreground shadow-sm p-6">
-          <div className="flex flex-col space-y-1.5">
-            <h3 className="font-semibold leading-none tracking-tight">招商银行</h3>
-            <p className="text-sm text-muted-foreground">储蓄卡</p>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest">Accounts</p>
+            <h1 className="text-2xl font-bold tracking-tight">账户管理</h1>
+            <p className="text-sm text-gray-500">管理你的银行卡、信用卡、电子钱包等账户。</p>
           </div>
-          <div className="p-6 pt-4 pl-0">
-            <div className="text-2xl font-bold">¥ 0.00</div>
-          </div>
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            onClick={() => fetchAccounts(true)} 
+            disabled={refreshing}
+            className={refreshing ? "animate-spin" : ""}
+            title="强制刷新余额"
+          >
+            <RefreshCw size={18} />
+          </Button>
         </div>
+        <div className="flex gap-2">
+          <AccountModal onSuccess={() => fetchAccounts(true)} />
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center p-12">
+          <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {accounts.length === 0 ? (
+             <div className="col-span-full text-center p-8 border border-dashed rounded-lg text-gray-500">
+                暂无账户，请点击右上角新建。
+             </div>
+          ) : (
+            accounts.map((account) => (
+              <div key={account.id} className="relative group h-full">
+                <AccountCard
+                  name={account.name}
+                  type={account.type as AccountType}
+                  currency={account.currency}
+                  balance={account.balance}
+                />
+                
+                {/* Actions Row */}
+                <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                   <SnapshotDialog 
+                      accountName={account.name}
+                      accountId={account.id} 
+                      currency={account.currency}
+                      currentEstimatedBalance={account.balance}
+                      trigger={
+                        <Button size="sm" variant="secondary" className="h-8 px-2 bg-white/90 backdrop-blur hover:bg-white shadow-sm text-xs">
+                          校准
+                        </Button>
+                      }
+                      onSuccess={() => fetchAccounts(true)}
+                   />
+                   
+                   <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button size="sm" variant="secondary" className="h-8 w-8 p-0 bg-white/90 backdrop-blur hover:bg-white shadow-sm">
+                        <MoreVertical size={14} />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuLabel>账户操作</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <AccountModal 
+                        mode="edit" 
+                        initialData={{
+                            id: account.id,
+                            name: account.name,
+                            type: account.type as AccountType,
+                            currency: account.currency as Currency
+                        }} 
+                        onSuccess={() => fetchAccounts(true)}
+                        trigger={
+                          <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                            <Edit className="mr-2 h-4 w-4" /> 编辑信息
+                          </DropdownMenuItem>
+                        }
+                      />
+                      <DropdownMenuItem 
+                        className="text-red-600 focus:text-red-600"
+                        onClick={() => handleDelete(account.id, account.name)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" /> 停用/删除
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      <div className="fixed bottom-8 right-8">
+        <TransactionModal accounts={accounts} onSuccess={() => fetchAccounts(true)} />
       </div>
     </div>
   );
 }
-

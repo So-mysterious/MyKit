@@ -14,7 +14,7 @@ export function TopNavBar() {
         
         <nav className="flex items-center gap-1">
           <Link 
-            href="/bookkeeping" 
+            href="/bookkeeping/dashboard" 
             className="px-3 py-2 text-sm font-medium text-gray-600 hover:text-black hover:bg-gray-100 rounded-md transition-colors flex items-center gap-2"
           >
             <CreditCard size={16} />
@@ -37,4 +37,3 @@ export function TopNavBar() {
     </header>
   );
 }
-
