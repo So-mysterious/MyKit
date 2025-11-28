@@ -1,7 +1,7 @@
 import { supabase } from '@/lib/supabase';
 import { calculateBalance } from './logic';
 import { AccountType, Currency } from '@/lib/constants';
-import { Database, Json, SnapshotRow, TransactionRow, ReconciliationIssueRow } from '@/types/database';
+import { Database, Json, SnapshotRow, TransactionRow, ReconciliationIssueRow, PeriodicTaskRow, DailyCheckinRow } from '@/types/database';
 
 // --- Accounts ---
 type AccountRowDB = Database['public']['Tables']['accounts']['Row'];
@@ -525,8 +525,6 @@ export async function deleteTag(id: string) {
 
 // --- Periodic Tasks ---
 
-type PeriodicTaskRow = Database['public']['Tables']['periodic_tasks']['Row'];
-
 export interface PeriodicTaskWithAccount extends PeriodicTaskRow {
   accounts: { name: string; currency: string } | null;
 }
@@ -549,22 +547,28 @@ export async function getPeriodicTasks() {
 
 export interface CreatePeriodicTaskData {
   account_id: string;
+  type?: 'income' | 'expense' | 'transfer';
   amount: number;
   category: string;
   description?: string;
   frequency: string;
   next_run_date: string;
+  to_account_id?: string;
+  to_amount?: number;
 }
 
 export async function createPeriodicTask(data: CreatePeriodicTaskData) {
   const { error } = await supabase.from('periodic_tasks').insert({
     account_id: data.account_id,
+    type: data.type || 'expense',
     amount: data.amount,
     category: data.category,
     description: data.description || null,
     frequency: data.frequency,
     next_run_date: data.next_run_date,
     is_active: true,
+    to_account_id: data.to_account_id || null,
+    to_amount: data.to_amount || null,
   });
   if (error) throw error;
 }
@@ -599,4 +603,249 @@ export async function togglePeriodicTaskActive(id: string, isActive: boolean) {
   }
   
   return data[0];
+}
+
+// --- Daily Check-in & Global Refresh ---
+
+/**
+ * 获取今日是否已打卡
+ */
+export async function getTodayCheckin(): Promise<{ checked: boolean; checkedAt: string | null }> {
+  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  
+  const { data, error } = await supabase
+    .from('daily_checkins')
+    .select('*')
+    .eq('check_date', today)
+    .maybeSingle();
+  
+  if (error) throw error;
+  
+  const checkin = data as DailyCheckinRow | null;
+  
+  return {
+    checked: !!checkin,
+    checkedAt: checkin?.checked_at || null,
+  };
+}
+
+/**
+ * 记录今日打卡
+ */
+export async function recordCheckin(): Promise<{ success: boolean; alreadyChecked: boolean }> {
+  const today = new Date().toISOString().split('T')[0];
+  
+  // 检查是否已打卡
+  const { data: existing } = await supabase
+    .from('daily_checkins')
+    .select('id')
+    .eq('check_date', today)
+    .maybeSingle();
+  
+  if (existing) {
+    return { success: true, alreadyChecked: true };
+  }
+  
+  // 插入打卡记录
+  const { error } = await supabase
+    .from('daily_checkins')
+    .insert({ check_date: today });
+  
+  if (error) throw error;
+  
+  return { success: true, alreadyChecked: false };
+}
+
+/**
+ * 计算下一次执行日期
+ */
+function calculateNextRunDate(currentDate: string, frequency: string): string {
+  const date = new Date(currentDate);
+  
+  switch (frequency) {
+    case 'daily':
+      date.setDate(date.getDate() + 1);
+      break;
+    case 'weekly':
+      date.setDate(date.getDate() + 7);
+      break;
+    case 'biweekly':
+      date.setDate(date.getDate() + 14);
+      break;
+    case 'monthly': {
+      // 自然月逻辑：保持日期，处理月末
+      const originalDay = date.getDate();
+      date.setMonth(date.getMonth() + 1);
+      // 如果日期溢出（如31号变成下下月1号），回退到月末
+      if (date.getDate() !== originalDay) {
+        date.setDate(0); // 回到上月最后一天
+      }
+      break;
+    }
+    case 'quarterly': {
+      const originalDay = date.getDate();
+      date.setMonth(date.getMonth() + 3);
+      if (date.getDate() !== originalDay) {
+        date.setDate(0);
+      }
+      break;
+    }
+    case 'yearly': {
+      const originalDay = date.getDate();
+      date.setFullYear(date.getFullYear() + 1);
+      if (date.getDate() !== originalDay) {
+        date.setDate(0);
+      }
+      break;
+    }
+    default:
+      // 自定义天数：custom_N 格式
+      if (frequency.startsWith('custom_')) {
+        const days = parseInt(frequency.replace('custom_', ''), 10);
+        if (!isNaN(days) && days > 0) {
+          date.setDate(date.getDate() + days);
+        }
+      }
+  }
+  
+  return date.toISOString().split('T')[0];
+}
+
+/**
+ * 执行周期性交易
+ * 检查所有启用的周期任务，对到期的任务创建流水并更新下次执行日期
+ */
+export async function executePeriodicTasks(): Promise<{
+  executed: number;
+  tasks: Array<{ taskId: string; taskName: string; date: string }>;
+}> {
+  const today = new Date().toISOString().split('T')[0];
+  
+  // 1. 获取所有启用的周期任务
+  const { data: tasksData, error: tasksError } = await supabase
+    .from('periodic_tasks')
+    .select('*')
+    .eq('is_active', true)
+    .lte('next_run_date', today);
+  
+  if (tasksError) throw tasksError;
+  
+  const tasks = (tasksData || []) as PeriodicTaskRow[];
+  const executedTasks: Array<{ taskId: string; taskName: string; date: string }> = [];
+  
+  // 2. 遍历每个任务
+  for (const task of tasks) {
+    let currentRunDate = task.next_run_date;
+    
+    // 循环处理所有到期的执行（补偿多期未打卡的情况）
+    while (currentRunDate <= today) {
+      // 创建流水
+      const transactionDate = `${currentRunDate}T12:00:00.000Z`; // 中午12点
+      
+      if (task.type === 'transfer' && task.to_account_id) {
+        // 划转：创建两笔关联流水
+        const groupId = crypto.randomUUID();
+        
+        // 转出（负数）
+        await supabase.from('transactions').insert({
+          account_id: task.account_id,
+          type: 'transfer',
+          amount: -Math.abs(task.amount),
+          category: task.category,
+          description: task.description,
+          date: transactionDate,
+          transfer_group_id: groupId,
+        });
+        
+        // 转入（正数）
+        const toAmount = task.to_amount || task.amount;
+        await supabase.from('transactions').insert({
+          account_id: task.to_account_id,
+          type: 'transfer',
+          amount: Math.abs(toAmount),
+          category: task.category,
+          description: task.description,
+          date: transactionDate,
+          transfer_group_id: groupId,
+        });
+      } else {
+        // 收入或支出
+        const amount = task.type === 'expense' 
+          ? -Math.abs(task.amount) 
+          : Math.abs(task.amount);
+        
+        await supabase.from('transactions').insert({
+          account_id: task.account_id,
+          type: task.type,
+          amount,
+          category: task.category,
+          description: task.description,
+          date: transactionDate,
+        });
+      }
+      
+      executedTasks.push({
+        taskId: task.id,
+        taskName: task.category,
+        date: currentRunDate,
+      });
+      
+      // 计算下一次执行日期
+      currentRunDate = calculateNextRunDate(currentRunDate, task.frequency);
+    }
+    
+    // 更新任务的下次执行日期
+    await supabase
+      .from('periodic_tasks')
+      .update({ next_run_date: currentRunDate })
+      .eq('id', task.id);
+  }
+  
+  return {
+    executed: executedTasks.length,
+    tasks: executedTasks,
+  };
+}
+
+/**
+ * 全局刷新函数
+ * 包含：周期性交易执行、自动快照检查（预留）
+ */
+export async function runGlobalRefresh(): Promise<{
+  periodicTasks: { executed: number; tasks: Array<{ taskId: string; taskName: string; date: string }> };
+  autoSnapshot: null; // 预留
+}> {
+  // 1. 执行周期性交易
+  const periodicResult = await executePeriodicTasks();
+  
+  // 2. 自动快照检查（预留）
+  // const snapshotResult = await autoSnapshotCheck();
+  
+  return {
+    periodicTasks: periodicResult,
+    autoSnapshot: null,
+  };
+}
+
+/**
+ * 每日打卡入口
+ * 首次打卡时执行全局刷新，后续仅刷新
+ */
+export async function handleDailyCheckin(): Promise<{
+  isFirstCheckin: boolean;
+  refreshResult: {
+    periodicTasks: { executed: number; tasks: Array<{ taskId: string; taskName: string; date: string }> };
+    autoSnapshot: null;
+  };
+}> {
+  // 1. 记录打卡
+  const checkinResult = await recordCheckin();
+  
+  // 2. 执行全局刷新
+  const refreshResult = await runGlobalRefresh();
+  
+  return {
+    isFirstCheckin: !checkinResult.alreadyChecked,
+    refreshResult,
+  };
 }

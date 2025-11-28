@@ -1,6 +1,26 @@
 # 开发日志 (Development Log)
 
 ## 2025-11-28
+- **每日打卡与周期性交易执行**：
+    - **打卡表 (`daily_checkins`)**：记录每日打卡日期和时间，每天只能有一条记录。
+    - **周期任务表扩展**：`periodic_tasks` 新增 `type`、`to_account_id`、`to_amount` 字段，支持划转类型。
+    - **后端函数**：
+        - `getTodayCheckin()`：获取今日是否已打卡。
+        - `recordCheckin()`：记录打卡。
+        - `calculateNextRunDate()`：根据周期计算下一次执行日期（支持 daily/weekly/biweekly/monthly/quarterly/yearly/custom_N）。
+        - `executePeriodicTasks()`：核心执行逻辑，循环补偿多期未打卡的任务。
+        - `runGlobalRefresh()`：全局刷新入口（周期交易 + 自动快照预留）。
+        - `handleDailyCheckin()`：每日打卡入口。
+    - **仪表盘打卡按钮**：
+        - 未打卡：显示"每日打卡"（实心按钮），点击执行打卡 + 全局刷新。
+        - 已打卡：显示"全局刷新"（描边按钮），点击仅执行全局刷新。
+        - 执行后显示结果提示（执行了 N 笔周期交易）。
+    - **周期交易执行逻辑**：
+        - 检查所有 `is_active = true` 且 `next_run_date <= today` 的任务。
+        - 循环执行直到 `next_run_date > today`（补偿多期）。
+        - 划转类型创建两笔关联流水（转出 + 转入）。
+        - 周期任务的 `description` 直接作为流水备注。
+
 - **页面布局与标题风格统一**：
     - **Layout 统一控制**：
         - 根容器：`flex h-[calc(100vh-3.5rem)]`

@@ -261,15 +261,16 @@ export default function PeriodicTasksPage() {
 
       await createPeriodicTask({
         account_id: form.accountId,
-        amount: finalAmount,
+        type: form.type,
+        amount: absAmount, // 存储正数，类型由 type 字段决定
         category: form.category,
         description: form.description || undefined,
         frequency: form.frequency === "custom" ? `custom_${form.customDays}` : form.frequency,
         next_run_date: nextRunDate.toISOString().split("T")[0],
-        // TODO: 划转需要额外存储 to_account_id 和 to_amount，当前数据库 schema 不支持
-        // 暂时将划转信息存入 description
+        // 划转专用字段
         ...(form.type === "transfer" && {
-          description: `${form.description || ""} [划转至: ${accounts.find(a => a.id === form.toAccountId)?.name || ""}${form.toAmount ? `, 金额: ${form.toAmount}` : ""}]`.trim(),
+          to_account_id: form.toAccountId,
+          to_amount: form.toAmount ? parseFloat(form.toAmount) : undefined,
         }),
       });
 

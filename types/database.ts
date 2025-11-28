@@ -115,6 +115,7 @@ export interface Database {
         Row: {
           id: string
           account_id: string
+          type: 'income' | 'expense' | 'transfer'
           amount: number
           category: string
           description: string | null
@@ -122,10 +123,13 @@ export interface Database {
           next_run_date: string
           is_active: boolean
           created_at: string
+          to_account_id: string | null
+          to_amount: number | null
         }
         Insert: {
           id?: string
           account_id: string
+          type?: 'income' | 'expense' | 'transfer'
           amount: number
           category: string
           description?: string | null
@@ -133,10 +137,13 @@ export interface Database {
           next_run_date: string
           is_active?: boolean
           created_at?: string
+          to_account_id?: string | null
+          to_amount?: number | null
         }
         Update: {
           id?: string
           account_id?: string
+          type?: 'income' | 'expense' | 'transfer'
           amount?: number
           category?: string
           description?: string | null
@@ -144,6 +151,8 @@ export interface Database {
           next_run_date?: string
           is_active?: boolean
           created_at?: string
+          to_account_id?: string | null
+          to_amount?: number | null
         }
         Relationships: []
       }
@@ -288,6 +297,24 @@ export interface Database {
         }
         Relationships: []
       }
+      daily_checkins: {
+        Row: {
+          id: string
+          check_date: string
+          checked_at: string
+        }
+        Insert: {
+          id?: string
+          check_date: string
+          checked_at?: string
+        }
+        Update: {
+          id?: string
+          check_date?: string
+          checked_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       bookkeeping_available_tags: {
@@ -312,3 +339,4 @@ export type AccountRow = Database['public']['Tables']['accounts']['Row'];
 export type TransactionRow = Database['public']['Tables']['transactions']['Row'];
 export type PeriodicTaskRow = Database['public']['Tables']['periodic_tasks']['Row'];
 export type ReconciliationIssueRow = Database['public']['Tables']['reconciliation_issues']['Row'];
+export type DailyCheckinRow = Database['public']['Tables']['daily_checkins']['Row'];

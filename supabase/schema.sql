@@ -48,17 +48,21 @@ CREATE TABLE IF NOT EXISTS snapshots (
 );
 
 -- 4. Periodic Tasks Table (自动记账配置表)
--- 用于生成定期收支（如月费、工资）
+-- 用于生成定期收支（如月费、工资、定期划转）
 CREATE TABLE IF NOT EXISTS periodic_tasks (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    amount DECIMAL(20, 4) NOT NULL, -- 正数为收入，负数为支出
+    type TEXT NOT NULL DEFAULT 'expense', -- 'income', 'expense', 'transfer'
+    amount DECIMAL(20, 4) NOT NULL, -- 金额（正数）
     category TEXT NOT NULL,
     description TEXT,
-    frequency TEXT NOT NULL DEFAULT 'monthly', -- 目前主要支持 monthly
+    frequency TEXT NOT NULL DEFAULT 'monthly', -- daily, weekly, biweekly, monthly, quarterly, yearly, custom_N
     next_run_date DATE NOT NULL, -- 下一次执行日期
     is_active BOOLEAN NOT NULL DEFAULT TRUE, -- 是否启用（FALSE 表示暂停）
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    -- 划转专用字段
+    to_account_id UUID REFERENCES accounts(id) ON DELETE SET NULL, -- 划转目标账户
+    to_amount DECIMAL(20, 4) -- 划转目标金额（跨币种时使用）
 );
 
 -- 5. Reconciliation Issues Table (查账提醒)
@@ -134,6 +138,16 @@ SELECT
     t.is_active,
     FALSE AS from_settings
 FROM bookkeeping_tags t;
+
+-- 10. Daily Check-ins Table (每日打卡表)
+-- 记录用户每日打卡，用于触发全局刷新
+CREATE TABLE IF NOT EXISTS daily_checkins (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    check_date DATE NOT NULL UNIQUE, -- 打卡日期（每天只能有一条）
+    checked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT timezone('utc'::text, now()) -- 打卡时间
+);
+
+CREATE INDEX IF NOT EXISTS idx_checkins_date ON daily_checkins(check_date);
 
 -- Indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_transactions_account_date ON transactions(account_id, date);
