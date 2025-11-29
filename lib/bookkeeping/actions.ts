@@ -481,6 +481,23 @@ export async function updateBookkeepingColors(data: {
   if (error) throw error;
 }
 
+export async function updateBookkeepingSettings(data: {
+  decimal_places?: number;
+  thousand_separator?: boolean;
+  auto_snapshot_enabled?: boolean;
+  snapshot_interval_days?: number;
+  snapshot_tolerance?: number;
+}) {
+  const payload = {
+    id: true,
+    ...data,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase.from('bookkeeping_settings').upsert(payload);
+  if (error) throw error;
+}
+
 export async function listTags() {
   const { data, error } = await supabase
     .from('bookkeeping_tags')
@@ -811,22 +828,228 @@ export async function executePeriodicTasks(): Promise<{
 }
 
 /**
+ * 自动快照检查
+ * 根据设置的间隔天数，检查是否需要为各账户创建新快照
+ */
+export async function autoSnapshotCheck(): Promise<{
+  created: number;
+  accounts: Array<{ accountId: string; accountName: string; balance: number }>;
+}> {
+  // 1. 获取设置
+  const settings = await getBookkeepingSettings();
+  
+  if (!settings.auto_snapshot_enabled) {
+    return { created: 0, accounts: [] };
+  }
+  
+  const intervalDays = settings.snapshot_interval_days;
+  const today = new Date();
+  const cutoffDate = new Date(today);
+  cutoffDate.setDate(cutoffDate.getDate() - intervalDays);
+  const cutoffISO = cutoffDate.toISOString();
+  
+  // 2. 获取所有账户
+  const { data: accountsData, error: accountsError } = await supabase
+    .from('accounts')
+    .select('id, name, currency')
+    .order('created_at', { ascending: true });
+  
+  if (accountsError) throw accountsError;
+  const accounts = accountsData || [];
+  
+  const createdSnapshots: Array<{ accountId: string; accountName: string; balance: number }> = [];
+  
+  // 3. 检查每个账户的最近快照
+  for (const account of accounts) {
+    // 获取该账户最近的快照
+    const { data: lastSnapshotData, error: snapshotError } = await supabase
+      .from('snapshots')
+      .select('*')
+      .eq('account_id', account.id)
+      .order('date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    
+    if (snapshotError) {
+      console.error(`Error fetching snapshot for account ${account.id}:`, snapshotError);
+      continue;
+    }
+    
+    const lastSnapshot = lastSnapshotData as SnapshotRow | null;
+    
+    // 判断是否需要创建新快照
+    const needsSnapshot = !lastSnapshot || new Date(lastSnapshot.date) < new Date(cutoffISO);
+    
+    if (needsSnapshot) {
+      // 计算当前余额
+      const balance = await calculateBalance(supabase, account.id, today);
+      
+      // 创建自动快照
+      const { error: insertError } = await supabase.from('snapshots').insert({
+        account_id: account.id,
+        balance,
+        date: today.toISOString(),
+        type: 'Auto',
+      });
+      
+      if (insertError) {
+        console.error(`Error creating snapshot for account ${account.id}:`, insertError);
+        continue;
+      }
+      
+      createdSnapshots.push({
+        accountId: account.id,
+        accountName: account.name,
+        balance,
+      });
+    }
+  }
+  
+  return {
+    created: createdSnapshots.length,
+    accounts: createdSnapshots,
+  };
+}
+
+/**
+ * 手动为所有账户创建快照
+ */
+export async function createManualSnapshotsForAllAccounts(): Promise<{
+  created: number;
+  accounts: Array<{ accountId: string; accountName: string; balance: number }>;
+}> {
+  const today = new Date();
+  
+  // 获取所有账户
+  const { data: accountsData, error: accountsError } = await supabase
+    .from('accounts')
+    .select('id, name, currency')
+    .order('created_at', { ascending: true });
+  
+  if (accountsError) throw accountsError;
+  const accounts = accountsData || [];
+  
+  const createdSnapshots: Array<{ accountId: string; accountName: string; balance: number }> = [];
+  
+  for (const account of accounts) {
+    // 计算当前余额
+    const balance = await calculateBalance(supabase, account.id, today);
+    
+    // 创建手动快照
+    const { error: insertError } = await supabase.from('snapshots').insert({
+      account_id: account.id,
+      balance,
+      date: today.toISOString(),
+      type: 'Manual',
+    });
+    
+    if (insertError) {
+      console.error(`Error creating snapshot for account ${account.id}:`, insertError);
+      continue;
+    }
+    
+    createdSnapshots.push({
+      accountId: account.id,
+      accountName: account.name,
+      balance,
+    });
+  }
+  
+  return {
+    created: createdSnapshots.length,
+    accounts: createdSnapshots,
+  };
+}
+
+/**
+ * 获取导出数据（流水和快照）
+ */
+export async function getExportData(options: {
+  startDate?: string;
+  endDate?: string;
+  includeTransactions?: boolean;
+  includeSnapshots?: boolean;
+}): Promise<{
+  transactions: Array<TransactionRow & { account_name: string; account_currency: string }>;
+  snapshots: Array<SnapshotRow & { account_name: string; account_currency: string }>;
+}> {
+  const { startDate, endDate, includeTransactions = true, includeSnapshots = true } = options;
+  
+  let transactions: Array<TransactionRow & { account_name: string; account_currency: string }> = [];
+  let snapshots: Array<SnapshotRow & { account_name: string; account_currency: string }> = [];
+  
+  if (includeTransactions) {
+    let query = supabase
+      .from('transactions')
+      .select(`
+        *,
+        accounts (name, currency)
+      `)
+      .order('date', { ascending: true });
+    
+    if (startDate) {
+      query = query.gte('date', startDate);
+    }
+    if (endDate) {
+      query = query.lte('date', endDate);
+    }
+    
+    const { data, error } = await query;
+    if (error) throw error;
+    
+    transactions = (data || []).map((tx: TransactionRow & { accounts: { name: string; currency: string } | null }) => ({
+      ...tx,
+      account_name: tx.accounts?.name || '',
+      account_currency: tx.accounts?.currency || '',
+    }));
+  }
+  
+  if (includeSnapshots) {
+    let query = supabase
+      .from('snapshots')
+      .select(`
+        *,
+        accounts (name, currency)
+      `)
+      .order('date', { ascending: true });
+    
+    if (startDate) {
+      query = query.gte('date', startDate);
+    }
+    if (endDate) {
+      query = query.lte('date', endDate);
+    }
+    
+    const { data, error } = await query;
+    if (error) throw error;
+    
+    snapshots = (data || []).map((snap: SnapshotRow & { accounts: { name: string; currency: string } | null }) => ({
+      ...snap,
+      account_name: snap.accounts?.name || '',
+      account_currency: snap.accounts?.currency || '',
+    }));
+  }
+  
+  return { transactions, snapshots };
+}
+
+/**
  * 全局刷新函数
- * 包含：周期性交易执行、自动快照检查（预留）
+ * 包含：周期性交易执行、自动快照检查
  */
 export async function runGlobalRefresh(): Promise<{
   periodicTasks: { executed: number; tasks: Array<{ taskId: string; taskName: string; date: string }> };
-  autoSnapshot: null; // 预留
+  autoSnapshot: { created: number; accounts: Array<{ accountId: string; accountName: string; balance: number }> };
 }> {
   // 1. 执行周期性交易
   const periodicResult = await executePeriodicTasks();
   
-  // 2. 自动快照检查（预留）
-  // const snapshotResult = await autoSnapshotCheck();
+  // 2. 自动快照检查
+  const snapshotResult = await autoSnapshotCheck();
   
   return {
     periodicTasks: periodicResult,
-    autoSnapshot: null,
+    autoSnapshot: snapshotResult,
   };
 }
 
@@ -838,7 +1061,7 @@ export async function handleDailyCheckin(): Promise<{
   isFirstCheckin: boolean;
   refreshResult: {
     periodicTasks: { executed: number; tasks: Array<{ taskId: string; taskName: string; date: string }> };
-    autoSnapshot: null;
+    autoSnapshot: { created: number; accounts: Array<{ accountId: string; accountName: string; balance: number }> };
   };
 }> {
   // 1. 记录打卡

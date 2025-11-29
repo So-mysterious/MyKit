@@ -2,6 +2,7 @@ import { ArrowRightLeft, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
 import { format } from 'date-fns';
 import { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { formatAmount, BookkeepingSettings } from '@/lib/bookkeeping/useSettings';
 
 interface BookkeepingColors {
   expense: string;
@@ -13,6 +14,7 @@ interface TransactionItemProps {
   transaction: any;
   isMergedTransfer?: boolean;
   colors?: BookkeepingColors;
+  displaySettings?: Partial<BookkeepingSettings>;
 }
 
 const DEFAULT_COLORS: BookkeepingColors = {
@@ -21,7 +23,7 @@ const DEFAULT_COLORS: BookkeepingColors = {
   transfer: "#0ea5e9",
 };
 
-export function TransactionItem({ transaction, isMergedTransfer, colors = DEFAULT_COLORS }: TransactionItemProps) {
+export function TransactionItem({ transaction, isMergedTransfer, colors = DEFAULT_COLORS, displaySettings }: TransactionItemProps) {
   const { type, amount, category, description, date, accounts, relatedTransfer } = transaction;
   const [showTooltip, setShowTooltip] = useState(false);
   const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0, width: 0 });
@@ -70,19 +72,22 @@ export function TransactionItem({ transaction, isMergedTransfer, colors = DEFAUL
     const fromSymbol = getSymbol(fromCurr);
     const toSymbol = getSymbol(toCurr);
 
+    const formattedFromAmount = formatAmount(Math.abs(amount), displaySettings);
+    const formattedToAmount = formatAmount(Math.abs(relatedTransfer.amount), displaySettings);
+
     if (fromCurr !== toCurr) {
-      displayAmount = `${fromSymbol}${Math.abs(amount).toFixed(2)} ➔ ${toSymbol}${Math.abs(relatedTransfer.amount).toFixed(2)}`;
+      displayAmount = `${fromSymbol}${formattedFromAmount} ➔ ${toSymbol}${formattedToAmount}`;
     } else {
-      displayAmount = `${fromSymbol}${Math.abs(amount).toFixed(2)}`;
+      displayAmount = `${fromSymbol}${formattedFromAmount}`;
     }
     amountColor = "#111827"; // gray-900 for transfers
   } else {
     const currency = accounts?.currency || 'CNY';
     const symbol = getSymbol(currency);
     
-    const absAmount = Math.abs(amount).toFixed(2);
+    const formattedAbsAmount = formatAmount(Math.abs(amount), displaySettings);
     const sign = amount > 0 ? '+' : '-';
-    displayAmount = `${sign}${symbol}${absAmount}`;
+    displayAmount = `${sign}${symbol}${formattedAbsAmount}`;
   }
 
   // Truncation Logic (10 chars max)

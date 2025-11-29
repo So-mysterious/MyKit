@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { format, parseISO, subDays, subMonths } from "date-fns";
 import { zhCN } from "date-fns/locale";
 import { useBookkeepingColors, BookkeepingColors } from "@/lib/bookkeeping/useColors";
+import { useBookkeepingSettings, formatAmount } from "@/lib/bookkeeping/useSettings";
 
 // ... (mergeTransfers remains exactly the same) ...
 function mergeTransfers(rawTransactions: any[]) {
@@ -190,6 +191,8 @@ export default function TransactionsPage() {
 
     // 全局颜色配置
     const { colors } = useBookkeepingColors();
+    // 全局显示设置
+    const { settings: displaySettings } = useBookkeepingSettings();
 
     const { ref, inView } = useInView();
 
@@ -490,12 +493,12 @@ export default function TransactionsPage() {
                                 <>
                                     <div className="flex items-center gap-1.5" style={{ color: colors.income }}>
                                         <ArrowDownCircle size={14} />
-                                        <span>收入 ¥{stats.income.toFixed(2)}</span>
+                                        <span>收入 ¥{formatAmount(stats.income, displaySettings)}</span>
                                     </div>
                                     
                                     <div className="flex items-center gap-1.5" style={{ color: colors.expense }}>
                                         <ArrowUpCircle size={14} />
-                                        <span>支出 ¥{stats.expense.toFixed(2)}</span>
+                                        <span>支出 ¥{formatAmount(stats.expense, displaySettings)}</span>
                                     </div>
                                 </>
                             )}
@@ -613,13 +616,13 @@ export default function TransactionsPage() {
                                     {group.expense > 0 && (
                                         <span className="flex items-center gap-1 font-medium" style={{ color: colors.expense }}>
                                             <span className="w-2 h-2 rounded-[1px]" style={{ backgroundColor: colors.expense }}></span>
-                                            -¥{group.expense.toFixed(2)}
+                                            -¥{formatAmount(group.expense, displaySettings)}
                                         </span>
                                     )}
                                     {group.income > 0 && (
                                         <span className="flex items-center gap-1 font-medium" style={{ color: colors.income }}>
                                             <span className="w-2 h-2 rounded-full" style={{ backgroundColor: colors.income }}></span>
-                                            +¥{group.income.toFixed(2)}
+                                            +¥{formatAmount(group.income, displaySettings)}
                                         </span>
                                     )}
                                 </div>
@@ -633,6 +636,7 @@ export default function TransactionsPage() {
                                         transaction={tx}
                                         isMergedTransfer={!!tx.relatedTransfer}
                                         colors={colors}
+                                        displaySettings={displaySettings}
                                     />
                                 ))}
                             </div>
