@@ -30,6 +30,7 @@ import {
   getAvailableTags,
   PeriodicTaskWithAccount,
 } from "@/lib/bookkeeping/actions";
+import { useBookkeepingColors } from "@/lib/bookkeeping/useColors";
 
 type TransactionType = "expense" | "income" | "transfer";
 
@@ -141,6 +142,9 @@ export default function PeriodicTasksPage() {
   const [tasks, setTasks] = React.useState<PeriodicTaskWithAccount[]>([]);
   const [accounts, setAccounts] = React.useState<{ id: string; name: string; currency: string }[]>([]);
   const [availableTags, setAvailableTags] = React.useState<{ kind: string; name: string }[]>([]);
+
+  // 全局颜色配置
+  const { colors } = useBookkeepingColors();
 
   // Form State
   const [showForm, setShowForm] = React.useState(false);
@@ -923,9 +927,8 @@ export default function PeriodicTasksPage() {
               >
                 {/* Icon */}
                 <div
-                  className={`flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center ${
-                    taskType === "expense" ? "text-red-500" : taskType === "transfer" ? "text-blue-500" : "text-green-500"
-                  }`}
+                  className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center"
+                  style={{ color: taskType === "expense" ? colors.expense : taskType === "transfer" ? colors.transfer : colors.income }}
                 >
                   {taskType === "expense" ? (
                     <ArrowUpCircle size={22} />
@@ -970,9 +973,8 @@ export default function PeriodicTasksPage() {
                 {/* Amount */}
                 <div className="text-right min-w-[80px]">
                   <p
-                    className={`text-base font-semibold tabular-nums ${
-                      taskType === "expense" ? "text-red-600" : taskType === "transfer" ? "text-blue-600" : "text-green-600"
-                    }`}
+                    className="text-base font-semibold tabular-nums"
+                    style={{ color: taskType === "expense" ? colors.expense : taskType === "transfer" ? colors.transfer : colors.income }}
                   >
                     {taskType === "expense" ? "-" : taskType === "transfer" ? "" : "+"}
                     {currencySymbol}

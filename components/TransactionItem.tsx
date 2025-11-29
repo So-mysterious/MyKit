@@ -3,12 +3,25 @@ import { format } from 'date-fns';
 import { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
+interface BookkeepingColors {
+  expense: string;
+  income: string;
+  transfer: string;
+}
+
 interface TransactionItemProps {
   transaction: any;
   isMergedTransfer?: boolean;
+  colors?: BookkeepingColors;
 }
 
-export function TransactionItem({ transaction, isMergedTransfer }: TransactionItemProps) {
+const DEFAULT_COLORS: BookkeepingColors = {
+  expense: "#ef4444",
+  income: "#22c55e",
+  transfer: "#0ea5e9",
+};
+
+export function TransactionItem({ transaction, isMergedTransfer, colors = DEFAULT_COLORS }: TransactionItemProps) {
   const { type, amount, category, description, date, accounts, relatedTransfer } = transaction;
   const [showTooltip, setShowTooltip] = useState(false);
   const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0, width: 0 });
@@ -16,17 +29,17 @@ export function TransactionItem({ transaction, isMergedTransfer }: TransactionIt
 
   // Styles & Icons based on Type
   let Icon = ArrowRightLeft;
-  let iconColor = "text-blue-600";
-  let amountColor = "text-gray-900";
+  let iconColor = colors.transfer;
+  let amountColor = "#111827"; // gray-900
 
   if (type === 'income') {
     Icon = ArrowDownLeft;
-    iconColor = "text-green-600";
-    amountColor = "text-green-600";
+    iconColor = colors.income;
+    amountColor = colors.income;
   } else if (type === 'expense') {
     Icon = ArrowUpRight;
-    iconColor = "text-red-600";
-    amountColor = "text-red-600";
+    iconColor = colors.expense;
+    amountColor = colors.expense;
   }
 
   // Formatting
@@ -62,7 +75,7 @@ export function TransactionItem({ transaction, isMergedTransfer }: TransactionIt
     } else {
       displayAmount = `${fromSymbol}${Math.abs(amount).toFixed(2)}`;
     }
-    amountColor = "text-black";
+    amountColor = "#111827"; // gray-900 for transfers
   } else {
     const currency = accounts?.currency || 'CNY';
     const symbol = getSymbol(currency);
@@ -105,7 +118,7 @@ export function TransactionItem({ transaction, isMergedTransfer }: TransactionIt
 
       {/* Col 1: Category (Icon + Name) */}
       <div className="flex items-center gap-3 overflow-hidden">
-        <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${iconColor}`}>
+        <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ color: iconColor }}>
           <Icon size={16} />
         </div>
         <span className="font-semibold text-gray-700 truncate" title={displayTitle}>{displayTitle}</span>
@@ -156,7 +169,7 @@ export function TransactionItem({ transaction, isMergedTransfer }: TransactionIt
       </div>
 
       {/* Col 6: Amount */}
-      <div className={`text-right font-bold font-mono ${amountColor} px-2`}>
+      <div className="text-right font-bold font-mono px-2" style={{ color: amountColor }}>
         {displayAmount}
       </div>
 

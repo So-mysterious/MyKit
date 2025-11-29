@@ -10,6 +10,7 @@ import { TransactionModal } from "@/components/TransactionModal";
 import { cn } from "@/lib/utils";
 import { format, parseISO, subDays, subMonths } from "date-fns";
 import { zhCN } from "date-fns/locale";
+import { useBookkeepingColors, BookkeepingColors } from "@/lib/bookkeeping/useColors";
 
 // ... (mergeTransfers remains exactly the same) ...
 function mergeTransfers(rawTransactions: any[]) {
@@ -186,6 +187,9 @@ export default function TransactionsPage() {
     // Dynamic Data
     const [accounts, setAccounts] = React.useState<any[]>([]);
     const [availableTags, setAvailableTags] = React.useState<{ kind: string; name: string }[]>([]);
+
+    // 全局颜色配置
+    const { colors } = useBookkeepingColors();
 
     const { ref, inView } = useInView();
 
@@ -484,12 +488,12 @@ export default function TransactionsPage() {
                             </div>
                             {(stats.income > 0 || stats.expense > 0) && (
                                 <>
-                                    <div className="flex items-center gap-1.5 text-green-600">
+                                    <div className="flex items-center gap-1.5" style={{ color: colors.income }}>
                                         <ArrowDownCircle size={14} />
                                         <span>收入 ¥{stats.income.toFixed(2)}</span>
                                     </div>
                                     
-                                    <div className="flex items-center gap-1.5 text-red-600">
+                                    <div className="flex items-center gap-1.5" style={{ color: colors.expense }}>
                                         <ArrowUpCircle size={14} />
                                         <span>支出 ¥{stats.expense.toFixed(2)}</span>
                                     </div>
@@ -607,14 +611,14 @@ export default function TransactionsPage() {
                                 </div>
                                 <div className="flex gap-4 text-xs font-mono">
                                     {group.expense > 0 && (
-                                        <span className="flex items-center gap-1 text-red-600 font-medium">
-                                            <span className="bg-red-600 w-2 h-2 rounded-[1px]"></span>
+                                        <span className="flex items-center gap-1 font-medium" style={{ color: colors.expense }}>
+                                            <span className="w-2 h-2 rounded-[1px]" style={{ backgroundColor: colors.expense }}></span>
                                             -¥{group.expense.toFixed(2)}
                                         </span>
                                     )}
                                     {group.income > 0 && (
-                                        <span className="flex items-center gap-1 text-green-600 font-medium">
-                                            <span className="bg-green-600 w-2 h-2 rounded-full"></span>
+                                        <span className="flex items-center gap-1 font-medium" style={{ color: colors.income }}>
+                                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: colors.income }}></span>
                                             +¥{group.income.toFixed(2)}
                                         </span>
                                     )}
@@ -628,6 +632,7 @@ export default function TransactionsPage() {
                                         key={tx.id}
                                         transaction={tx}
                                         isMergedTransfer={!!tx.relatedTransfer}
+                                        colors={colors}
                                     />
                                 ))}
                             </div>
