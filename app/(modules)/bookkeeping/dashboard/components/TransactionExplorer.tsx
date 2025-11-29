@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { format, startOfWeek, startOfMonth, endOfWeek, endOfMonth, eachDayOfInterval, eachWeekOfInterval, eachMonthOfInterval, isSameDay, isSameWeek, isSameMonth, parseISO } from "date-fns";
+import { format, eachDayOfInterval, eachWeekOfInterval, eachMonthOfInterval, isSameDay, isSameWeek, isSameMonth, parseISO, subDays, isAfter } from "date-fns";
 import { zhCN } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight } from "lucide-react";
@@ -13,10 +13,19 @@ interface TransactionExplorerProps {
 
 type Metric = 'expense' | 'income' | 'net';
 type Granularity = 'day' | 'week' | 'month';
+type TimeRange = '7d' | '30d' | '90d' | 'all';
+
+const TIME_RANGE_OPTIONS: { value: TimeRange; label: string }[] = [
+    { value: '7d', label: '7天' },
+    { value: '30d', label: '30天' },
+    { value: '90d', label: '90天' },
+    { value: 'all', label: '全部' },
+];
 
 export function TransactionExplorer({ transactions }: TransactionExplorerProps) {
     const [metric, setMetric] = React.useState<Metric>('expense');
     const [granularity, setGranularity] = React.useState<Granularity>('day');
+    const [timeRange, setTimeRange] = React.useState<TimeRange>('30d');
     const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null);
     const [colors, setColors] = React.useState({
         expense: '#ef4444',
@@ -34,12 +43,26 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
         });
     }, []);
 
+    // 根据时间范围过滤交易
+    const filteredTransactions = React.useMemo(() => {
+        if (timeRange === 'all') return transactions;
+        
+        const now = new Date();
+        const days = timeRange === '7d' ? 7 : timeRange === '30d' ? 30 : 90;
+        const cutoff = subDays(now, days);
+        
+        return transactions.filter(tx => {
+            const txDate = typeof tx.date === 'string' ? parseISO(tx.date) : new Date(tx.date);
+            return isAfter(txDate, cutoff);
+        });
+    }, [transactions, timeRange]);
+
     // 1. Process Data
     const chartData = React.useMemo(() => {
-        if (transactions.length === 0) return [];
+        if (filteredTransactions.length === 0) return [];
 
         // Sort by date
-        const sorted = [...transactions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        const sorted = [...filteredTransactions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
         const startDate = new Date(sorted[0].date);
         const endDate = new Date(sorted[sorted.length - 1].date);
 
@@ -83,7 +106,7 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
                 value: Number(value.toFixed(2))
             };
         });
-    }, [transactions, metric, granularity]);
+    }, [filteredTransactions, metric, granularity]);
 
     // 2. Stats
     const stats = React.useMemo(() => {
@@ -285,6 +308,25 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
                             {m === 'expense' ? '支出' : m === 'income' ? '收入' : '净流水'}
                         </button>
                     ))}
+                </div>
+
+                {/* 时间范围 */}
+                <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium text-gray-700">时间范围</div>
+                    <div className="flex bg-gray-100 p-1 rounded-lg">
+                        {TIME_RANGE_OPTIONS.map(opt => (
+                            <button
+                                key={opt.value}
+                                onClick={() => setTimeRange(opt.value)}
+                                className={cn(
+                                    "px-2 py-1 text-xs font-medium rounded-md transition-all",
+                                    timeRange === opt.value ? "bg-white shadow-sm text-gray-900" : "text-gray-500 hover:text-gray-700"
+                                )}
+                            >
+                                {opt.label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
                 <div className="flex items-center justify-between">
