@@ -114,6 +114,22 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
 
     // 将角度转换为弧形路径
     const describeArc = (startAngle: number, endAngle: number, innerRadius: number, outerRadius: number) => {
+        const angleDiff = endAngle - startAngle;
+        
+        // 特殊处理：当只有一个分类（接近 360°）时，绘制完整的圆环
+        if (angleDiff >= 359.9) {
+            // 使用两个半圆来绘制完整的圆环
+            return `
+                M ${center - outerRadius} ${center}
+                A ${outerRadius} ${outerRadius} 0 1 1 ${center + outerRadius} ${center}
+                A ${outerRadius} ${outerRadius} 0 1 1 ${center - outerRadius} ${center}
+                M ${center - innerRadius} ${center}
+                A ${innerRadius} ${innerRadius} 0 1 0 ${center + innerRadius} ${center}
+                A ${innerRadius} ${innerRadius} 0 1 0 ${center - innerRadius} ${center}
+                Z
+            `;
+        }
+        
         const startRad = (startAngle * Math.PI) / 180;
         const endRad = (endAngle * Math.PI) / 180;
         
@@ -126,7 +142,7 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
         const x4 = center + innerRadius * Math.cos(startRad);
         const y4 = center + innerRadius * Math.sin(startRad);
         
-        const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+        const largeArc = angleDiff > 180 ? 1 : 0;
         
         return `M ${x1} ${y1} A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${x4} ${y4} Z`;
     };
