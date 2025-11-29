@@ -119,9 +119,9 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
     const points = chartData.map((d, i) => `${getX(i)},${getY(d.value)}`).join(" ");
 
     return (
-        <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm h-full flex flex-col">
+        <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm h-full flex flex-col overflow-hidden">
             {/* Header */}
-            <div className="flex items-center justify-between mb-6 shrink-0">
+            <div className="flex items-center justify-between mb-4 shrink-0">
                 <div>
                     <div className="text-sm text-gray-500 mb-1">交易探索</div>
                     <div className="text-3xl font-bold text-gray-900 font-mono">
@@ -135,8 +135,8 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
                 </div>
             </div>
 
-            {/* Chart Area */}
-            <div className="relative w-full flex-1 min-h-[200px] mb-6 overflow-hidden">
+            {/* Chart Area - 允许 tooltip 溢出 */}
+            <div className="relative w-full flex-1 min-h-0 mb-4">
                 {chartData.length > 0 ? (
                     <div className="relative w-full h-full">
                         <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="w-full h-full">
@@ -202,23 +202,46 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
                                     onMouseLeave={() => setHoveredIndex(null)}
                                 />
                             ))}
-                        </svg>
 
-                        {/* Tooltip (HTML overlay) */}
-                        {hoveredIndex !== null && (
-                            <div
-                                className="absolute pointer-events-none bg-white p-2 rounded-lg shadow-lg border border-gray-100 text-xs z-10 transform -translate-x-1/2 -translate-y-full"
-                                style={{
-                                    left: `${(hoveredIndex / (chartData.length - 1)) * 100}%`,
-                                    top: `0%` // Floating above
-                                }}
-                            >
-                                <div className="font-bold text-gray-900">{chartData[hoveredIndex].label}</div>
-                                <div className="text-gray-500">
-                                    ¥{chartData[hoveredIndex].value.toFixed(2)}
-                                </div>
-                            </div>
-                        )}
+                            {/* Tooltip 放在 SVG 内部 */}
+                            {hoveredIndex !== null && (
+                                <g>
+                                    {/* Tooltip 背景 */}
+                                    <rect
+                                        x={Math.max(10, Math.min(getX(hoveredIndex) - 40, width - 90))}
+                                        y={Math.max(5, getY(chartData[hoveredIndex].value) - 45)}
+                                        width="80"
+                                        height="40"
+                                        rx="6"
+                                        fill="white"
+                                        stroke="#e5e7eb"
+                                        strokeWidth="1"
+                                        filter="drop-shadow(0 2px 4px rgba(0,0,0,0.1))"
+                                    />
+                                    {/* 日期文字 */}
+                                    <text
+                                        x={Math.max(10, Math.min(getX(hoveredIndex) - 40, width - 90)) + 40}
+                                        y={Math.max(5, getY(chartData[hoveredIndex].value) - 45) + 16}
+                                        textAnchor="middle"
+                                        fontSize="11"
+                                        fontWeight="600"
+                                        fill="#111827"
+                                    >
+                                        {chartData[hoveredIndex].label}
+                                    </text>
+                                    {/* 金额文字 */}
+                                    <text
+                                        x={Math.max(10, Math.min(getX(hoveredIndex) - 40, width - 90)) + 40}
+                                        y={Math.max(5, getY(chartData[hoveredIndex].value) - 45) + 32}
+                                        textAnchor="middle"
+                                        fontSize="11"
+                                        fill="#6b7280"
+                                    >
+                                        ¥{chartData[hoveredIndex].value.toFixed(2)}
+                                    </text>
+                                </g>
+                            )}
+                        </svg>
                     </div>
                 ) : (
                     <div className="flex items-center justify-center h-full text-gray-300 text-sm">
@@ -228,27 +251,27 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
             </div>
 
             {/* Stats Grid */}
-            <div className="grid grid-cols-2 gap-4 mb-6 shrink-0">
+            <div className="grid grid-cols-4 gap-4 mb-4 shrink-0">
                 <div>
                     <div className="text-xs text-gray-400 mb-1">最高</div>
-                    <div className="font-mono font-medium">{stats.max.toFixed(0)}</div>
+                    <div className="font-mono font-medium text-sm">{stats.max.toFixed(0)}</div>
                 </div>
                 <div>
                     <div className="text-xs text-gray-400 mb-1">最低</div>
-                    <div className="font-mono font-medium">{stats.min.toFixed(0)}</div>
+                    <div className="font-mono font-medium text-sm">{stats.min.toFixed(0)}</div>
                 </div>
                 <div>
                     <div className="text-xs text-gray-400 mb-1">波幅</div>
-                    <div className="font-mono font-medium">{stats.range.toFixed(0)}</div>
+                    <div className="font-mono font-medium text-sm">{stats.range.toFixed(0)}</div>
                 </div>
                 <div>
                     <div className="text-xs text-gray-400 mb-1">平均</div>
-                    <div className="font-mono font-medium">{stats.avg.toFixed(0)}</div>
+                    <div className="font-mono font-medium text-sm">{stats.avg.toFixed(0)}</div>
                 </div>
             </div>
 
             {/* Controls */}
-            <div className="flex flex-col gap-3 shrink-0">
+            <div className="flex flex-col gap-2 shrink-0">
                 <div className="flex bg-gray-100 p-1 rounded-lg">
                     {(['expense', 'income', 'net'] as Metric[]).map(m => (
                         <button
