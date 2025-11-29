@@ -21,18 +21,19 @@ import { supabase } from "@/lib/supabase"; // logic.ts needs client passed, or w
 // Let's just use the logic one and pass client.
 
 interface SnapshotDialogProps {
-  accountId: string; // Added accountId
+  accountId: string;
   accountName: string;
   currentEstimatedBalance: number;
   currency: string;
   trigger?: React.ReactNode;
   onSuccess?: () => void;
+  defaultDate?: string; // YYYY-MM-DD 格式
 }
 
-export function SnapshotDialog({ accountId, accountName, currentEstimatedBalance, currency, trigger, onSuccess }: SnapshotDialogProps) {
+export function SnapshotDialog({ accountId, accountName, currentEstimatedBalance, currency, trigger, onSuccess, defaultDate }: SnapshotDialogProps) {
   const [open, setOpen] = React.useState(false);
   const [actualBalance, setActualBalance] = React.useState("");
-  const [date, setDate] = React.useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = React.useState(defaultDate || new Date().toISOString().split('T')[0]);
   const [submitting, setSubmitting] = React.useState(false);
   
   // System calculation state

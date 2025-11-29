@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { AlertCircle, CalendarIcon, CheckCircle2, Loader2, RefreshCcw, ShieldAlert } from "lucide-react";
+import { AlertCircle, CalendarIcon, CheckCircle2, Loader2, RefreshCcw, ShieldAlert, Crosshair } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { TransactionModal, TransactionModalSuccessPayload } from "@/components/TransactionModal";
+import { SnapshotDialog } from "@/components/SnapshotDialog";
 import {
   getAccountsMeta,
   getReconciliationIssues,
@@ -50,6 +51,8 @@ export default function ReconciliationPage() {
   const [running, setRunning] = React.useState(false);
   const [resolvingId, setResolvingId] = React.useState<string | null>(null);
   const [snapshotMap, setSnapshotMap] = React.useState<Record<string, SnapshotRow>>({});
+  const [calibrateIssue, setCalibrateIssue] = React.useState<ReconciliationIssue | null>(null);
+  const [calibrateAccountId, setCalibrateAccountId] = React.useState<string | null>(null);
 
   const initializedAccountRef = React.useRef(false);
 
@@ -161,6 +164,38 @@ export default function ReconciliationPage() {
     if (!id) return undefined;
     return snapshotMap[id];
   };
+
+  // 处理"去校准"按钮点击
+  const handleCalibrateClick = (issue: ReconciliationIssue) => {
+    setCalibrateIssue(issue);
+    // 默认选择问题所属的账户
+    setCalibrateAccountId(issue.account_id);
+  };
+
+  // 校准完成后的回调
+  const handleCalibrateSuccess = async () => {
+    setCalibrateIssue(null);
+    setCalibrateAccountId(null);
+    // 重新运行查账以更新问题列表
+    if (calibrateIssue) {
+      await regenerateIssuesForAccounts([calibrateIssue.account_id], "manual");
+    }
+    await fetchData();
+  };
+
+  // 获取校准弹窗需要的账户信息
+  const getCalibrateAccountInfo = () => {
+    if (!calibrateAccountId) return null;
+    const account = accountNameMap.get(calibrateAccountId);
+    if (!account) return null;
+    return {
+      id: calibrateAccountId,
+      name: account.name,
+      currency: account.currency,
+    };
+  };
+
+  const calibrateAccountInfo = getCalibrateAccountInfo();
 
   return (
     <div className="space-y-6">
@@ -296,6 +331,15 @@ export default function ReconciliationPage() {
                       />
                       <Button
                         size="sm"
+                        variant="secondary"
+                        className="text-xs px-3 py-1 h-auto gap-1"
+                        onClick={() => handleCalibrateClick(issue)}
+                      >
+                        <Crosshair size={12} />
+                        去校准
+                      </Button>
+                      <Button
+                        size="sm"
                         variant="outline"
                         className="text-xs px-3 py-1 h-auto"
                         onClick={() => handleResolve(issue.id)}
@@ -312,6 +356,79 @@ export default function ReconciliationPage() {
           </div>
         )}
       </section>
+
+      {/* 校准弹窗 */}
+      {calibrateIssue && (
+        <Dialog open={!!calibrateIssue} onOpenChange={(open) => !open && setCalibrateIssue(null)}>
+          <DialogContent className="sm:max-w-[450px]">
+            <DialogHeader>
+              <DialogTitle>校准账户余额</DialogTitle>
+              <DialogDescription>
+                选择需要校准的账户，输入该日期的实际余额。
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="space-y-4 py-2">
+              {/* 账户选择 */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700">选择账户</label>
+                <select
+                  className="flex h-11 w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/50"
+                  value={calibrateAccountId || ""}
+                  onChange={(e) => setCalibrateAccountId(e.target.value)}
+                >
+                  {/* 问题所属账户 */}
+                  {(() => {
+                    const account = accountNameMap.get(calibrateIssue.account_id);
+                    return account ? (
+                      <option value={calibrateIssue.account_id}>
+                        {account.name} ({account.currency})
+                      </option>
+                    ) : null;
+                  })()}
+                  {/* 如果是划转，可能涉及其他账户 */}
+                  {accounts
+                    .filter((acc) => acc.id !== calibrateIssue.account_id)
+                    .map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.name} ({acc.currency})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {/* 时间段提示 */}
+              <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-sm text-amber-800">
+                <p className="font-medium">问题时段</p>
+                <p className="text-xs mt-1">{formatRange(calibrateIssue.period_start, calibrateIssue.period_end)}</p>
+                <p className="text-xs mt-1 opacity-80">建议校准终点日期（{format(new Date(calibrateIssue.period_end), "yyyy年M月d日", { locale: zhCN })}）的余额。</p>
+              </div>
+            </div>
+
+            <DialogFooter className="flex gap-2">
+              <Button variant="outline" onClick={() => setCalibrateIssue(null)}>
+                取消
+              </Button>
+              {calibrateAccountInfo && (
+                <SnapshotDialog
+                  accountId={calibrateAccountInfo.id}
+                  accountName={calibrateAccountInfo.name}
+                  currentEstimatedBalance={0}
+                  currency={calibrateAccountInfo.currency}
+                  defaultDate={calibrateIssue.period_end.split("T")[0]}
+                  onSuccess={handleCalibrateSuccess}
+                  trigger={
+                    <Button className="gap-1">
+                      <Crosshair size={14} />
+                      前往校准
+                    </Button>
+                  }
+                />
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

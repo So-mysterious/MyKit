@@ -79,6 +79,7 @@ export default function SettingsPage() {
     thousand_separator: true,
     auto_snapshot_enabled: true,
     snapshot_interval_days: 30,
+    snapshot_tolerance: 0.01,
   });
 
   // Tags State
@@ -113,6 +114,7 @@ export default function SettingsPage() {
         thousand_separator: settingsData.thousand_separator,
         auto_snapshot_enabled: settingsData.auto_snapshot_enabled,
         snapshot_interval_days: settingsData.snapshot_interval_days,
+        snapshot_tolerance: settingsData.snapshot_tolerance,
       });
       setTags(tagRows);
     } catch (error) {
@@ -431,6 +433,41 @@ export default function SettingsPage() {
                   )}
                 >
                   {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Snapshot Tolerance */}
+        <div className="space-y-3">
+          <Label className="text-sm font-medium">查账容差阈值</Label>
+          <p className="text-xs text-gray-500">
+            当流水与快照的差额小于此值时，不会触发查账提醒。用于忽略微小的精度误差。
+          </p>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number"
+              step="0.01"
+              min="0"
+              value={tempSettings.snapshot_tolerance}
+              onChange={(e) => setTempSettings(prev => ({ ...prev, snapshot_tolerance: parseFloat(e.target.value) || 0 }))}
+              className="w-32 font-mono"
+            />
+            <span className="text-sm text-gray-500">元</span>
+            <div className="flex gap-2 ml-4">
+              {[0.01, 0.1, 1, 10].map(val => (
+                <button
+                  key={val}
+                  onClick={() => setTempSettings(prev => ({ ...prev, snapshot_tolerance: val }))}
+                  className={cn(
+                    "px-3 py-1 rounded-md text-xs font-medium transition-all",
+                    tempSettings.snapshot_tolerance === val
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  )}
+                >
+                  {val}
                 </button>
               ))}
             </div>

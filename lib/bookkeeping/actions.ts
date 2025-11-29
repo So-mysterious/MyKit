@@ -227,14 +227,57 @@ export async function getDashboardTransactions() {
 
 // --- Snapshots ---
 
-export async function createSnapshot(data: { account_id: string; balance: number; date: string }) {
-  const { error } = await supabase.from('snapshots').insert({
-    account_id: data.account_id,
-    balance: data.balance,
-    date: data.date,
-    type: 'Manual'
-  });
-  if (error) throw error;
+/**
+ * 创建或更新快照
+ * 如果同一账户同一天已有快照，则更新；否则新增
+ */
+export async function createSnapshot(data: { account_id: string; balance: number; date: string; type?: string }) {
+  // 提取日期部分 (YYYY-MM-DD)
+  const dateOnly = data.date.split('T')[0];
+  const startOfDay = `${dateOnly}T00:00:00.000Z`;
+  const endOfDay = `${dateOnly}T23:59:59.999Z`;
+  
+  // 检查同一天是否已有快照
+  const { data: existingSnapshots, error: queryError } = await supabase
+    .from('snapshots')
+    .select('id')
+    .eq('account_id', data.account_id)
+    .gte('date', startOfDay)
+    .lte('date', endOfDay);
+  
+  if (queryError) throw queryError;
+  
+  if (existingSnapshots && existingSnapshots.length > 0) {
+    // 更新最新的一条（如果有多条，只更新第一条，其他删除）
+    const latestId = existingSnapshots[0].id;
+    
+    // 删除多余的快照（如果有的话）
+    if (existingSnapshots.length > 1) {
+      const idsToDelete = existingSnapshots.slice(1).map(s => s.id);
+      await supabase.from('snapshots').delete().in('id', idsToDelete);
+    }
+    
+    // 更新快照
+    const { error: updateError } = await supabase
+      .from('snapshots')
+      .update({
+        balance: data.balance,
+        date: data.date,
+        type: data.type || 'Manual',
+      })
+      .eq('id', latestId);
+    
+    if (updateError) throw updateError;
+  } else {
+    // 新增快照
+    const { error: insertError } = await supabase.from('snapshots').insert({
+      account_id: data.account_id,
+      balance: data.balance,
+      date: data.date,
+      type: data.type || 'Manual',
+    });
+    if (insertError) throw insertError;
+  }
 }
 
 export async function getSnapshotsByIds(ids: string[]): Promise<SnapshotRow[]> {
@@ -257,7 +300,8 @@ type TagRow = Database['public']['Tables']['bookkeeping_tags']['Row'];
 type BookkeepingSettingsRow = Database['public']['Tables']['bookkeeping_settings']['Row'];
 export type BookkeepingKind = 'expense' | 'income' | 'transfer';
 
-const RECON_TOLERANCE = 0.01;
+// 默认容差阈值，实际使用时从数据库读取
+const DEFAULT_RECON_TOLERANCE = 0.01;
 
 function normalizeDate(input: string | Date) {
   const date = typeof input === 'string' ? new Date(input) : input;
@@ -310,6 +354,10 @@ export async function runReconciliationCheck({
   endDate,
   source = 'manual',
 }: RunReconciliationParams) {
+  // 获取容差阈值设置
+  const settings = await getBookkeepingSettings();
+  const tolerance = settings.snapshot_tolerance || DEFAULT_RECON_TOLERANCE;
+
   const { data: snapshotsData, error: snapshotError } = await supabase
     .from('snapshots')
     .select('*')
@@ -368,7 +416,8 @@ export async function runReconciliationCheck({
     const expectedDelta = Number(endSnap.balance) - Number(startSnap.balance);
     const diff = Number((actualDelta - expectedDelta).toFixed(2));
 
-    if (Math.abs(diff) > RECON_TOLERANCE) {
+    // 使用数据库中的容差阈值
+    if (Math.abs(diff) > tolerance) {
       segments.push({
         start: startSnap,
         end: endSnap,
@@ -884,24 +933,24 @@ export async function autoSnapshotCheck(): Promise<{
       // 计算当前余额
       const balance = await calculateBalance(supabase, account.id, today);
       
-      // 创建自动快照
-      const { error: insertError } = await supabase.from('snapshots').insert({
-        account_id: account.id,
-        balance,
-        date: today.toISOString(),
-        type: 'Auto',
-      });
-      
-      if (insertError) {
+      // 创建自动快照（使用 createSnapshot 函数，自动处理覆盖逻辑）
+      try {
+        await createSnapshot({
+          account_id: account.id,
+          balance,
+          date: today.toISOString(),
+          type: 'Auto',
+        });
+        
+        createdSnapshots.push({
+          accountId: account.id,
+          accountName: account.name,
+          balance,
+        });
+      } catch (insertError) {
         console.error(`Error creating snapshot for account ${account.id}:`, insertError);
         continue;
       }
-      
-      createdSnapshots.push({
-        accountId: account.id,
-        accountName: account.name,
-        balance,
-      });
     }
   }
   
@@ -935,24 +984,24 @@ export async function createManualSnapshotsForAllAccounts(): Promise<{
     // 计算当前余额
     const balance = await calculateBalance(supabase, account.id, today);
     
-    // 创建手动快照
-    const { error: insertError } = await supabase.from('snapshots').insert({
-      account_id: account.id,
-      balance,
-      date: today.toISOString(),
-      type: 'Manual',
-    });
-    
-    if (insertError) {
+    // 创建手动快照（使用 createSnapshot 函数，自动处理覆盖逻辑）
+    try {
+      await createSnapshot({
+        account_id: account.id,
+        balance,
+        date: today.toISOString(),
+        type: 'Manual',
+      });
+      
+      createdSnapshots.push({
+        accountId: account.id,
+        accountName: account.name,
+        balance,
+      });
+    } catch (insertError) {
       console.error(`Error creating snapshot for account ${account.id}:`, insertError);
       continue;
     }
-    
-    createdSnapshots.push({
-      accountId: account.id,
-      accountName: account.name,
-      balance,
-    });
   }
   
   return {
