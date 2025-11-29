@@ -1,5 +1,30 @@
 # 开发日志 (Development Log)
 
+## 2025-11-29
+- **仪表盘图表组件优化**：
+    - **交易探索组件 (TransactionExplorer)**：
+        - **Tooltip 修复**：将 HTML Tooltip 改为 SVG 内部渲染（`<rect>` + `<text>`），避免被 `overflow-hidden` 裁剪。
+        - **布局修复**：统计网格从 2×2 改为 1×4 单行布局，减小各部分间距防止溢出。
+        - **时间范围选择**：新增 7天/30天/90天/全部 四档时间范围选择器，默认 30 天。
+    - **生活配方组件 (LifeRecipe)**：
+        - **环形图悬停修复**：将 `strokeDasharray` 圆环改为 `<path>` 扇形绘制，使用 `handleMouseMove` 计算鼠标位置对应的扇形，只在环形区域内触发悬停。
+        - **单一分类修复**：当只有一个交易分类（100%）时，使用两个半圆拼接成完整圆环，解决 SVG 弧形起点终点重合导致无法显示的问题。
+        - **时间范围选择**：同样新增 7天/30天/90天/全部 四档时间范围选择器，默认 30 天。
+        - **悬停效果优化**：激活的扇形会稍微放大并增加亮度，下方标签同步高亮。
+
+- **全局颜色主题系统**：
+    - **`useBookkeepingColors` Hook** (`lib/bookkeeping/useColors.ts`)：
+        - 提供统一的颜色获取接口，从 `bookkeeping_settings` 表读取配置。
+        - 返回 `{ expense, income, transfer }` 三种颜色值。
+        - 内置默认颜色作为 fallback。
+    - **已适配组件**：
+        - 流水页面：总收入/支出统计、每日收入/支出统计、交易图标和金额。
+        - 周期交易页面：任务图标和金额显示。
+        - 仪表盘：所有图表组件（Heatmap、TransactionExplorer、LifeRecipe）。
+        - `TransactionItem` 组件：接收 `colors` prop 应用全局配色。
+
+---
+
 ## 2025-11-28
 - **每日打卡与周期性交易执行**：
     - **打卡表 (`daily_checkins`)**：记录每日打卡日期和时间，每天只能有一条记录。
@@ -176,3 +201,73 @@
     - **数据库新增**：
         - `bookkeeping_settings`、`bookkeeping_tags`、`transaction_tag_links`、`bookkeeping_available_tags` 视图。
     - **类型同步**：`types/database.ts` 已加入上述表定义，后续代码改造可直接使用类型提示。
+
+---
+
+## 关键技术提醒
+
+### Supabase 类型定义规范
+- `types/database.ts` 中的 `Database` 接口必须包含完整结构：
+  ```typescript
+  Tables: { [tableName]: { Row, Insert, Update, Relationships: [] } }
+  Functions: Record<string, never>
+  Enums: Record<string, never>
+  ```
+- 缺少 `Relationships`、`Functions`、`Enums` 会导致 Supabase 客户端类型推断失败，返回 `never` 类型。
+- 如遇 `Property 'xxx' does not exist on type 'never'` 错误，优先检查类型定义完整性。
+
+### SVG 图表绘制要点
+- **完整圆环**：当弧形角度为 360° 时，起点终点重合导致路径无效。解决方案：使用两个 180° 半圆拼接。
+- **悬停检测**：`strokeDasharray` 圆环的可点击区域仅为描边部分，建议改用 `<path>` 绘制扇形。
+- **Tooltip 定位**：避免使用 `overflow-hidden` 容器内的绝对定位 Tooltip，改用 SVG 内部元素或 Portal。
+
+### React Portal 使用场景
+- 侧边栏 Tooltip、备注浮窗等需要突破父容器 z-index 限制的场景。
+- 使用 `createPortal(element, document.body)` 渲染到 body 层级。
+- 需要在客户端组件中使用，并检查 `typeof document !== 'undefined'`。
+
+### 页面布局统一规范
+- **Layout 层**：`flex-1 h-[calc(100vh-3.5rem)] overflow-y-auto p-6`
+- **页面根容器**：`space-y-6`（不设置 padding）
+- **标题区域**：`space-y-1` 内含英文/中文标题/说明文字
+- **特殊页面（如流水）**：使用 `-m-6` 抵消 layout padding
+
+---
+
+## 待开发规划
+
+### 高优先级
+1. **自动快照功能** (`autoSnapshotCheck`)：
+   - 在 `runGlobalRefresh` 中预留了接口，需实现定期自动记录账户余额快照。
+   - 配置项：开关、周期（天数）、容差阈值（设置页面已有 UI 占位）。
+
+2. **数据导入/导出**：
+   - CSV/XLS 格式的流水导入导出。
+   - 在前端直接生成/解析文件，不依赖后端。
+
+3. **周期交易手动执行**：
+   - 周期交易列表增加"立即执行"按钮，手动触发一次交易。
+
+### 中优先级
+4. **金额显示规则设置**：
+   - 千分位分隔符、小数位数、默认币种。
+   - 设置页面 UI 已有占位，需实现逻辑。
+
+5. **账户分组与排序**：
+   - 账户页面支持自定义分组和拖拽排序。
+
+6. **流水批量操作**：
+   - 多选删除、批量修改标签。
+
+### 低优先级
+7. **日历模块开发**：
+   - 日历页面 (`/calendar`) 已有路由占位。
+   - 任务管理 (`/calendar/tasks`) 已有路由占位。
+
+8. **移动端适配**：
+   - 响应式布局优化。
+   - 触摸交互适配。
+
+9. **数据统计报表**：
+   - 月度/年度收支报表。
+   - 分类趋势分析。
