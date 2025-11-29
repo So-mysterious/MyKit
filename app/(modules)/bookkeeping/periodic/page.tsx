@@ -15,6 +15,7 @@ import {
   Check,
   ArrowDownCircle,
   ArrowUpCircle,
+  ArrowRightLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -172,8 +173,8 @@ export default function PeriodicTasksPage() {
       }
     } catch (error) {
       console.error("加载周期任务失败:", error);
-      const message = error instanceof Error ? error.message : JSON.stringify(error);
-      alert(`加载数据失败: ${message}\n\n如果是数据库字段缺失，请在 Supabase 执行 schema.sql 中的 ALTER TABLE 语句。`);
+      const message = error instanceof Error ? error.message : "未知错误";
+      alert(`加载数据失败: ${message}`);
     } finally {
       setLoading(false);
     }
@@ -228,6 +229,28 @@ export default function PeriodicTasksPage() {
       }
     }
   }, [form.type, form.accountId, form.toAccountId, accounts]);
+
+  // Auto-select toAccountId for edit form when type changes to transfer
+  React.useEffect(() => {
+    if (editForm.type === "transfer" && !editForm.toAccountId) {
+      const target = accounts.find((a) => a.id !== editForm.accountId);
+      if (target) {
+        setEditForm((prev) => ({ ...prev, toAccountId: target.id }));
+      }
+    }
+  }, [editForm.type, editForm.accountId, editForm.toAccountId, accounts]);
+
+  // Reset edit form toAccountId if it conflicts with accountId
+  React.useEffect(() => {
+    if (editForm.type === "transfer" && editForm.toAccountId === editForm.accountId) {
+      const fallback = accounts.find((a) => a.id !== editForm.accountId);
+      if (fallback) {
+        setEditForm((prev) => ({ ...prev, toAccountId: fallback.id }));
+      } else {
+        setEditForm((prev) => ({ ...prev, toAccountId: "" }));
+      }
+    }
+  }, [editForm.type, editForm.accountId, editForm.toAccountId, accounts]);
 
   const handleFormChange = (key: keyof FormState, value: string) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -321,7 +344,9 @@ export default function PeriodicTasksPage() {
   };
 
   const startEdit = (task: PeriodicTaskWithAccount) => {
-    const isExpense = task.amount < 0;
+    // 使用 task.type 字段，兼容旧数据
+    const taskType = task.type || (task.amount < 0 ? "expense" : "income");
+    
     // 解析 frequency（可能是 custom_30 格式）
     let frequency = task.frequency;
     let customDays = "30";
@@ -332,11 +357,11 @@ export default function PeriodicTasksPage() {
 
     setEditingId(task.id);
     setEditForm({
-      type: isExpense ? "expense" : "income",
+      type: taskType as TransactionType,
       accountId: task.account_id,
-      toAccountId: "",
+      toAccountId: task.to_account_id || "",
       amount: Math.abs(task.amount).toString(),
-      toAmount: "",
+      toAmount: task.to_amount ? task.to_amount.toString() : "",
       category: task.category,
       description: task.description || "",
       frequency,
@@ -356,21 +381,28 @@ export default function PeriodicTasksPage() {
       return;
     }
 
+    if (editForm.type === "transfer" && !editForm.toAccountId) {
+      alert("请选择划转目标账户");
+      return;
+    }
+
     setSubmitting(true);
     try {
       const absAmount = Math.abs(parseFloat(editForm.amount));
-      const finalAmount = editForm.type === "expense" ? -absAmount : absAmount;
 
       const customDays = editForm.frequency === "custom" ? parseInt(editForm.customDays) || 30 : undefined;
       const nextRunDate = calculateNextRunDate(editForm.firstRunDate, editForm.frequency, customDays);
 
       await updatePeriodicTask(id, {
         account_id: editForm.accountId,
-        amount: finalAmount,
+        type: editForm.type,
+        amount: absAmount, // 存储正数
         category: editForm.category,
         description: editForm.description || null,
         frequency: editForm.frequency === "custom" ? `custom_${editForm.customDays}` : editForm.frequency,
         next_run_date: nextRunDate.toISOString().split("T")[0],
+        to_account_id: editForm.type === "transfer" ? editForm.toAccountId : null,
+        to_amount: editForm.type === "transfer" && editForm.toAmount ? parseFloat(editForm.toAmount) : null,
       });
 
       setEditingId(null);
@@ -431,7 +463,7 @@ export default function PeriodicTasksPage() {
           </div>
 
           {/* Type Switcher - 三选一 */}
-          <div className="grid grid-cols-3 gap-2 p-1 bg-gray-100 rounded-lg max-w-md">
+          <div className="grid grid-cols-3 gap-2 p-1 bg-gray-100 rounded-lg">
             <button
               type="button"
               onClick={() => handleFormChange("type", "expense")}
@@ -654,7 +686,7 @@ export default function PeriodicTasksPage() {
           </div>
         ) : (
           tasks.map((task) => {
-            const isExpense = task.amount < 0;
+            const taskType = task.type || (task.amount < 0 ? "expense" : "income"); // 兼容旧数据
             const isEditing = editingId === task.id;
             const currency = task.accounts?.currency || "CNY";
             const currencySymbol = getCurrencySymbol(currency);
@@ -676,7 +708,7 @@ export default function PeriodicTasksPage() {
                   className="rounded-xl border-2 border-blue-200 bg-blue-50/30 p-4 space-y-4"
                 >
                   {/* Type Switcher */}
-                  <div className="grid grid-cols-2 gap-2 p-1 bg-gray-100 rounded-lg max-w-xs">
+                  <div className="grid grid-cols-3 gap-2 p-1 bg-gray-100 rounded-lg">
                     <button
                       type="button"
                       onClick={() => handleEditFormChange("type", "expense")}
@@ -699,12 +731,25 @@ export default function PeriodicTasksPage() {
                     >
                       收入
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => handleEditFormChange("type", "transfer")}
+                      className={`text-sm font-medium py-1.5 rounded-md transition-all ${
+                        editForm.type === "transfer"
+                          ? "bg-white shadow-sm text-blue-600"
+                          : "text-gray-500 hover:text-gray-900"
+                      }`}
+                    >
+                      划转
+                    </button>
                   </div>
 
                   <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
                     {/* Amount */}
                     <div className="space-y-1">
-                      <Label className="text-xs text-gray-500">金额</Label>
+                      <Label className="text-xs text-gray-500">
+                        {editForm.type === "transfer" ? "转出金额" : "金额"}
+                      </Label>
                       <div className="relative">
                         <Input
                           type="number"
@@ -721,7 +766,9 @@ export default function PeriodicTasksPage() {
 
                     {/* Account */}
                     <div className="space-y-1">
-                      <Label className="text-xs text-gray-500">账户</Label>
+                      <Label className="text-xs text-gray-500">
+                        {editForm.type === "transfer" ? "转出账户" : "账户"}
+                      </Label>
                       <select
                         className="flex h-10 w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm"
                         value={editForm.accountId}
@@ -767,6 +814,48 @@ export default function PeriodicTasksPage() {
                       </select>
                     </div>
                   </div>
+
+                  {/* Transfer Fields for Edit */}
+                  {editForm.type === "transfer" && (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {/* To Amount */}
+                      <div className="space-y-1">
+                        <Label className="text-xs text-gray-500">转入金额 (选填)</Label>
+                        <div className="relative">
+                          <Input
+                            type="number"
+                            step="0.01"
+                            placeholder="0.00"
+                            value={editForm.toAmount}
+                            onChange={(e) => handleEditFormChange("toAmount", e.target.value)}
+                            className="pl-8"
+                          />
+                          <span className="absolute left-3 top-2.5 text-gray-500 text-sm">
+                            {getCurrencySymbol(getAccountCurrency(editForm.toAccountId))}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-gray-400">留空则默认等于转出金额</p>
+                      </div>
+
+                      {/* To Account */}
+                      <div className="space-y-1">
+                        <Label className="text-xs text-gray-500">转入账户</Label>
+                        <select
+                          className="flex h-10 w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm"
+                          value={editForm.toAccountId}
+                          onChange={(e) => handleEditFormChange("toAccountId", e.target.value)}
+                        >
+                          {accounts
+                            .filter((acc) => acc.id !== editForm.accountId)
+                            .map((acc) => (
+                              <option key={acc.id} value={acc.id}>
+                                {acc.name} ({acc.currency})
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Custom Days for Edit */}
                   {editForm.frequency === "custom" && (
@@ -835,10 +924,16 @@ export default function PeriodicTasksPage() {
                 {/* Icon */}
                 <div
                   className={`flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center ${
-                    isExpense ? "text-red-500" : "text-green-500"
+                    taskType === "expense" ? "text-red-500" : taskType === "transfer" ? "text-blue-500" : "text-green-500"
                   }`}
                 >
-                  {isExpense ? <ArrowDownCircle size={22} /> : <ArrowUpCircle size={22} />}
+                  {taskType === "expense" ? (
+                    <ArrowUpCircle size={22} />
+                  ) : taskType === "transfer" ? (
+                    <ArrowRightLeft size={22} />
+                  ) : (
+                    <ArrowDownCircle size={22} />
+                  )}
                 </div>
 
                 {/* Main Info */}
@@ -876,10 +971,10 @@ export default function PeriodicTasksPage() {
                 <div className="text-right min-w-[80px]">
                   <p
                     className={`text-base font-semibold tabular-nums ${
-                      isExpense ? "text-red-600" : "text-green-600"
+                      taskType === "expense" ? "text-red-600" : taskType === "transfer" ? "text-blue-600" : "text-green-600"
                     }`}
                   >
-                    {isExpense ? "-" : "+"}
+                    {taskType === "expense" ? "-" : taskType === "transfer" ? "" : "+"}
                     {currencySymbol}
                     {Math.abs(task.amount).toFixed(2)}
                   </p>

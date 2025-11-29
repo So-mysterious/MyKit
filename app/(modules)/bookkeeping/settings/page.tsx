@@ -158,7 +158,7 @@ export default function SettingsPage() {
       <div className="flex items-center justify-between">
         <div className="space-y-1">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest">Settings</p>
-          <h1 className="text-2xl font-bold tracking-tight">记账设置中心</h1>
+        <h1 className="text-2xl font-bold tracking-tight">记账设置中心</h1>
           <p className="text-sm text-gray-500">在这里配置全局颜色主题与标签库。</p>
         </div>
       </div>

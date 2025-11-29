@@ -529,19 +529,22 @@ export interface PeriodicTaskWithAccount extends PeriodicTaskRow {
   accounts: { name: string; currency: string } | null;
 }
 
-export async function getPeriodicTasks() {
+export async function getPeriodicTasks(): Promise<PeriodicTaskWithAccount[]> {
   const { data, error } = await supabase
     .from('periodic_tasks')
     .select(`
       *,
-      accounts (
+      accounts:account_id (
         name,
         currency
       )
     `)
     .order('next_run_date', { ascending: true });
 
-  if (error) throw error;
+  if (error) {
+    console.error('getPeriodicTasks error:', error);
+    throw new Error(error.message || 'Failed to fetch periodic tasks');
+  }
   return (data || []) as PeriodicTaskWithAccount[];
 }
 

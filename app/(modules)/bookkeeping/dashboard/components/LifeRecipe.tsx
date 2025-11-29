@@ -99,7 +99,7 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
     });
 
     return (
-        <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm h-full flex flex-col overflow-hidden">
+        <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm h-full flex flex-col">
             {/* Header */}
             <div className="flex items-center justify-between mb-6 shrink-0">
                 <div>
