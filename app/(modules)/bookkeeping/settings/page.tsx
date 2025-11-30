@@ -16,10 +16,13 @@ import {
   updateBookkeepingSettings,
   createManualSnapshotsForAllAccounts,
   getExportData,
+  getCurrencyRates,
+  updateCurrencyRate,
   BookkeepingKind,
 } from "@/lib/bookkeeping/actions";
+import { CurrencyRateRow } from "@/types/database";
 import { Database } from "@/types/database";
-import { Camera, Download, Upload, FileSpreadsheet, FileText } from "lucide-react";
+import { Camera, Download, Upload, FileSpreadsheet, FileText, RefreshCw, DollarSign } from "lucide-react";
 import { formatAmount } from "@/lib/bookkeeping/useSettings";
 
 type TagRow = Database["public"]["Tables"]["bookkeeping_tags"]["Row"];
@@ -99,10 +102,18 @@ export default function SettingsPage() {
   const [exporting, setExporting] = React.useState(false);
   const [showExportPreview, setShowExportPreview] = React.useState(false);
 
+  // Currency Rates State
+  const [currencyRates, setCurrencyRates] = React.useState<CurrencyRateRow[]>([]);
+  const [savingRate, setSavingRate] = React.useState<string | null>(null);
+
   const fetchData = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [settingsData, tagRows] = await Promise.all([getBookkeepingSettings(), listTags()]);
+      const [settingsData, tagRows, ratesData] = await Promise.all([
+        getBookkeepingSettings(), 
+        listTags(),
+        getCurrencyRates(),
+      ]);
       setSettings(settingsData);
       setTempColors({
         expense_color: settingsData.expense_color,
@@ -117,6 +128,7 @@ export default function SettingsPage() {
         snapshot_tolerance: settingsData.snapshot_tolerance,
       });
       setTags(tagRows);
+      setCurrencyRates(ratesData);
     } catch (error) {
       console.error(error);
       alert("加载设置数据失败，请稍后重试");
@@ -277,6 +289,20 @@ export default function SettingsPage() {
       { expense: [], income: [], transfer: [] }
     );
   }, [tags]);
+
+  const handleUpdateRate = async (from: string, to: string, rate: number) => {
+    const key = `${from}-${to}`;
+    setSavingRate(key);
+    try {
+      await updateCurrencyRate(from, to, rate);
+      await fetchData();
+    } catch (error) {
+      console.error(error);
+      alert("更新汇率失败");
+    } finally {
+      setSavingRate(null);
+    }
+  };
 
   // 金额预览
   const previewAmount = 12345.6789;
@@ -444,7 +470,7 @@ export default function SettingsPage() {
           <Label className="text-sm font-medium">查账容差阈值</Label>
           <p className="text-xs text-gray-500">
             当流水与快照的差额小于此值时，不会触发查账提醒。用于忽略微小的精度误差。
-          </p>
+        </p>
           <div className="flex items-center gap-3">
             <Input
               type="number"
@@ -697,6 +723,67 @@ export default function SettingsPage() {
             注意：导入功能正在开发中，目前仅支持导出。
           </p>
         </div>
+      </section>
+
+      {/* Currency Rates Section */}
+      <section className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm space-y-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-amber-600 uppercase tracking-wider">Exchange Rates</p>
+            <h2 className="text-xl font-bold text-gray-900 mt-1">汇率设置</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              用于跨币种预算计算时的汇率转换。
+            </p>
+          </div>
+          <DollarSign className="text-amber-500" size={24} />
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {currencyRates.map((rate) => {
+            const key = `${rate.from_currency}-${rate.to_currency}`;
+            return (
+              <div key={key} className="rounded-xl border border-gray-100 bg-gray-50 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-gray-700">
+                    {rate.from_currency} → {rate.to_currency}
+                  </span>
+                  {savingRate === key && (
+                    <RefreshCw className="w-4 h-4 animate-spin text-gray-400" />
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-500">1 {rate.from_currency} =</span>
+                  <Input
+                    type="number"
+                    step="0.0001"
+                    className="w-28 text-sm"
+                    defaultValue={rate.rate}
+                    onBlur={(e) => {
+                      const newRate = parseFloat(e.target.value);
+                      if (!isNaN(newRate) && newRate > 0 && newRate !== rate.rate) {
+                        handleUpdateRate(rate.from_currency, rate.to_currency, newRate);
+                      }
+                    }}
+                  />
+                  <span className="text-xs text-gray-500">{rate.to_currency}</span>
+                </div>
+                <p className="text-xs text-gray-400 mt-2">
+                  更新于 {new Date(rate.updated_at).toLocaleDateString("zh-CN")}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+
+        {currencyRates.length === 0 && (
+          <div className="text-center py-8 text-gray-400 text-sm">
+            暂无汇率数据。汇率会在创建预算计划时自动初始化。
+          </div>
+        )}
+
+        <p className="text-xs text-gray-400">
+          提示：汇率用于将不同币种的交易金额换算为预算约束币种。请定期更新以确保预算计算准确。
+        </p>
       </section>
 
       {/* Tag Management Section */}

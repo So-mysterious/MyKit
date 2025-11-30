@@ -315,6 +315,126 @@ export interface Database {
         }
         Relationships: []
       }
+      budget_plans: {
+        Row: {
+          id: string
+          plan_type: 'category' | 'total'
+          category_name: string | null
+          period: 'weekly' | 'monthly'
+          hard_limit: number
+          limit_currency: string
+          soft_limit_enabled: boolean
+          status: 'active' | 'expired' | 'paused'
+          account_filter_mode: 'all' | 'include' | 'exclude'
+          account_filter_ids: string[] | null
+          start_date: string
+          end_date: string
+          included_categories: string[] | null
+          round_number: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          plan_type: 'category' | 'total'
+          category_name?: string | null
+          period?: 'weekly' | 'monthly'
+          hard_limit: number
+          limit_currency?: string
+          soft_limit_enabled?: boolean
+          status?: 'active' | 'expired' | 'paused'
+          account_filter_mode?: 'all' | 'include' | 'exclude'
+          account_filter_ids?: string[] | null
+          start_date: string
+          end_date: string
+          included_categories?: string[] | null
+          round_number?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          plan_type?: 'category' | 'total'
+          category_name?: string | null
+          period?: 'weekly' | 'monthly'
+          hard_limit?: number
+          limit_currency?: string
+          soft_limit_enabled?: boolean
+          status?: 'active' | 'expired' | 'paused'
+          account_filter_mode?: 'all' | 'include' | 'exclude'
+          account_filter_ids?: string[] | null
+          start_date?: string
+          end_date?: string
+          included_categories?: string[] | null
+          round_number?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      budget_period_records: {
+        Row: {
+          id: string
+          plan_id: string
+          round_number: number
+          period_index: number
+          period_start: string
+          period_end: string
+          actual_amount: number | null
+          hard_limit: number
+          soft_limit: number | null
+          indicator_status: 'star' | 'green' | 'red' | 'pending'
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          plan_id: string
+          round_number: number
+          period_index: number
+          period_start: string
+          period_end: string
+          actual_amount?: number | null
+          hard_limit: number
+          soft_limit?: number | null
+          indicator_status?: 'star' | 'green' | 'red' | 'pending'
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          plan_id?: string
+          round_number?: number
+          period_index?: number
+          period_start?: string
+          period_end?: string
+          actual_amount?: number | null
+          hard_limit?: number
+          soft_limit?: number | null
+          indicator_status?: 'star' | 'green' | 'red' | 'pending'
+          created_at?: string
+        }
+        Relationships: []
+      }
+      currency_rates: {
+        Row: {
+          from_currency: string
+          to_currency: string
+          rate: number
+          updated_at: string
+        }
+        Insert: {
+          from_currency: string
+          to_currency: string
+          rate: number
+          updated_at?: string
+        }
+        Update: {
+          from_currency?: string
+          to_currency?: string
+          rate?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       bookkeeping_available_tags: {
@@ -340,3 +460,6 @@ export type TransactionRow = Database['public']['Tables']['transactions']['Row']
 export type PeriodicTaskRow = Database['public']['Tables']['periodic_tasks']['Row'];
 export type ReconciliationIssueRow = Database['public']['Tables']['reconciliation_issues']['Row'];
 export type DailyCheckinRow = Database['public']['Tables']['daily_checkins']['Row'];
+export type BudgetPlanRow = Database['public']['Tables']['budget_plans']['Row'];
+export type BudgetPeriodRecordRow = Database['public']['Tables']['budget_period_records']['Row'];
+export type CurrencyRateRow = Database['public']['Tables']['currency_rates']['Row'];

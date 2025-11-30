@@ -102,11 +102,11 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
         return data.map((item, index) => {
             const angle = item.percent * 360;
             const segment = {
-                ...item,
+            ...item,
                 startAngle,
                 endAngle: startAngle + angle,
-                color: getSegmentColor(index, data.length)
-            };
+            color: getSegmentColor(index, data.length)
+        };
             startAngle += angle;
             return segment;
         });
@@ -232,14 +232,14 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
                                 
                                 return (
                                     <path
-                                        key={segment.name}
+                                    key={segment.name}
                                         d={describeArc(segment.startAngle, segment.endAngle, activeInner, activeOuter)}
                                         fill={segment.color}
                                         className="transition-all duration-200 cursor-pointer"
                                         style={{
                                             filter: isActive ? 'brightness(1.1)' : 'none'
                                         }}
-                                    />
+                                />
                                 );
                             })}
                         </svg>
@@ -290,20 +290,20 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
                 
                 {/* 交易类型 */}
                 <div className="flex items-center justify-between">
-                    <div className="text-sm font-medium text-gray-700">交易类型</div>
-                    <div className="flex bg-gray-100 p-1 rounded-lg">
-                        {(['expense', 'income'] as Metric[]).map(m => (
-                            <button
-                                key={m}
-                                onClick={() => setMetric(m)}
-                                className={cn(
-                                    "px-3 py-1 text-xs font-medium rounded-md transition-all",
-                                    metric === m ? "bg-white shadow-sm text-gray-900" : "text-gray-500 hover:text-gray-700"
-                                )}
-                            >
-                                {m === 'expense' ? '支出' : '收入'}
-                            </button>
-                        ))}
+                <div className="text-sm font-medium text-gray-700">交易类型</div>
+                <div className="flex bg-gray-100 p-1 rounded-lg">
+                    {(['expense', 'income'] as Metric[]).map(m => (
+                        <button
+                            key={m}
+                            onClick={() => setMetric(m)}
+                            className={cn(
+                                "px-3 py-1 text-xs font-medium rounded-md transition-all",
+                                metric === m ? "bg-white shadow-sm text-gray-900" : "text-gray-500 hover:text-gray-700"
+                            )}
+                        >
+                            {m === 'expense' ? '支出' : '收入'}
+                        </button>
+                    ))}
                     </div>
                 </div>
             </div>

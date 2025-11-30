@@ -149,6 +149,113 @@ CREATE TABLE IF NOT EXISTS daily_checkins (
 
 CREATE INDEX IF NOT EXISTS idx_checkins_date ON daily_checkins(check_date);
 
+-- 11. Budget Plans Table (预算计划表)
+-- 存储标签预算和总支出预算
+CREATE TABLE IF NOT EXISTS budget_plans (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    
+    -- 计划类型: 'category' (标签预算) / 'total' (总支出预算)
+    plan_type TEXT NOT NULL CHECK (plan_type IN ('category', 'total')),
+    
+    -- 关联标签名称（category 类型必填，total 类型为 NULL）
+    category_name TEXT,
+    
+    -- 周期: weekly / monthly
+    period TEXT NOT NULL DEFAULT 'monthly' CHECK (period IN ('weekly', 'monthly')),
+    
+    -- 刚性约束金额
+    hard_limit DECIMAL(20, 4) NOT NULL,
+    -- 约束币种
+    limit_currency TEXT NOT NULL DEFAULT 'CNY',
+    
+    -- 是否启用柔性约束（自动计算前3周期均值）
+    soft_limit_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    
+    -- 计划状态: active / expired / paused
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired', 'paused')),
+    
+    -- 账户筛选模式: 'all' / 'include' / 'exclude'
+    account_filter_mode TEXT NOT NULL DEFAULT 'all' CHECK (account_filter_mode IN ('all', 'include', 'exclude')),
+    -- 账户ID列表（include 或 exclude 模式时使用）
+    account_filter_ids UUID[],
+    
+    -- 计划时效（12个周期）
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    
+    -- 总支出计划专用：纳入统计的标签列表
+    included_categories TEXT[],
+    
+    -- 轮次（用于历史记录，每次再启动+1）
+    round_number SMALLINT NOT NULL DEFAULT 1,
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+-- 确保只有一个 total 类型的计划
+CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_plans_total_unique 
+    ON budget_plans(plan_type) WHERE plan_type = 'total' AND status != 'expired';
+
+-- 确保每个标签只有一个活跃计划
+CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_plans_category_unique 
+    ON budget_plans(category_name) WHERE plan_type = 'category' AND status = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_budget_plans_status ON budget_plans(status);
+
+-- 12. Budget Period Records Table (预算周期执行记录表)
+-- 记录每个周期的执行情况，用于 12 个指示灯
+CREATE TABLE IF NOT EXISTS budget_period_records (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    plan_id UUID NOT NULL REFERENCES budget_plans(id) ON DELETE CASCADE,
+    
+    -- 轮次（与 plan 的 round_number 对应）
+    round_number SMALLINT NOT NULL,
+    
+    -- 周期序号（1-12）
+    period_index SMALLINT NOT NULL CHECK (period_index >= 1 AND period_index <= 12),
+    
+    -- 周期时间范围
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    
+    -- 实际消费金额（换算到约束币种后）
+    actual_amount DECIMAL(20, 4),
+    
+    -- 约束线快照（记录当时的设置，因为可能被修改）
+    hard_limit DECIMAL(20, 4) NOT NULL,
+    soft_limit DECIMAL(20, 4), -- 前3个周期为 NULL
+    
+    -- 指示灯状态: star / green / red / pending
+    indicator_status TEXT NOT NULL DEFAULT 'pending' CHECK (indicator_status IN ('star', 'green', 'red', 'pending')),
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+CREATE INDEX IF NOT EXISTS idx_budget_period_records_plan ON budget_period_records(plan_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_period_records_unique 
+    ON budget_period_records(plan_id, round_number, period_index);
+
+-- 13. Currency Rates Table (汇率表)
+-- 用于跨币种预算计算
+CREATE TABLE IF NOT EXISTS currency_rates (
+    from_currency TEXT NOT NULL,
+    to_currency TEXT NOT NULL,
+    rate DECIMAL(20, 8) NOT NULL, -- 1 from_currency = rate to_currency
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+    PRIMARY KEY (from_currency, to_currency)
+);
+
+-- 预设常用汇率
+INSERT INTO currency_rates (from_currency, to_currency, rate) VALUES
+    ('HKD', 'CNY', 0.92),
+    ('USD', 'CNY', 7.25),
+    ('CNY', 'HKD', 1.09),
+    ('CNY', 'USD', 0.14),
+    ('HKD', 'USD', 0.13),
+    ('USD', 'HKD', 7.78)
+ON CONFLICT (from_currency, to_currency) DO UPDATE SET rate = EXCLUDED.rate;
+
 -- Indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_transactions_account_date ON transactions(account_id, date);
 CREATE INDEX IF NOT EXISTS idx_snapshots_account_date ON snapshots(account_id, date);

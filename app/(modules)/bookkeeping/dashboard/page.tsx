@@ -4,6 +4,7 @@ import * as React from "react";
 import { Heatmap } from "./components/Heatmap";
 import { TransactionExplorer } from "./components/TransactionExplorer";
 import { LifeRecipe } from "./components/LifeRecipe";
+import { BudgetTracker } from "./components/BudgetTracker";
 import { getDashboardTransactions, getTodayCheckin, handleDailyCheckin } from "@/lib/bookkeeping/actions";
 import { Button } from "@/components/ui/button";
 import { CheckCircle, RefreshCw, Loader2 } from "lucide-react";
@@ -107,6 +108,11 @@ export default function DashboardPage() {
       <div className="flex flex-col gap-6 max-w-5xl mx-auto pb-10">
         <section className="w-full">
           <Heatmap transactions={transactions} />
+        </section>
+
+        {/* 预算追踪 */}
+        <section className="w-full">
+          <BudgetTracker />
         </section>
 
         <section className="w-full h-[500px]">

@@ -1,7 +1,7 @@
 import { supabase } from '@/lib/supabase';
 import { calculateBalance } from './logic';
 import { AccountType, Currency } from '@/lib/constants';
-import { Database, Json, SnapshotRow, TransactionRow, ReconciliationIssueRow, PeriodicTaskRow, DailyCheckinRow } from '@/types/database';
+import { Database, Json, SnapshotRow, TransactionRow, ReconciliationIssueRow, PeriodicTaskRow, DailyCheckinRow, BudgetPlanRow, BudgetPeriodRecordRow, CurrencyRateRow } from '@/types/database';
 
 // --- Accounts ---
 type AccountRowDB = Database['public']['Tables']['accounts']['Row'];
@@ -271,11 +271,11 @@ export async function createSnapshot(data: { account_id: string; balance: number
   } else {
     // 新增快照
     const { error: insertError } = await supabase.from('snapshots').insert({
-      account_id: data.account_id,
-      balance: data.balance,
-      date: data.date,
+    account_id: data.account_id,
+    balance: data.balance,
+    date: data.date,
       type: data.type || 'Manual',
-    });
+  });
     if (insertError) throw insertError;
   }
 }
@@ -1123,4 +1123,765 @@ export async function handleDailyCheckin(): Promise<{
     isFirstCheckin: !checkinResult.alreadyChecked,
     refreshResult,
   };
+}
+
+// --- Budget Plans ---
+
+export interface BudgetPlanWithRecords extends BudgetPlanRow {
+  records: BudgetPeriodRecordRow[];
+}
+
+/**
+ * 获取所有预算计划（包含周期记录）
+ */
+export async function getBudgetPlans(status?: 'active' | 'expired' | 'paused'): Promise<BudgetPlanWithRecords[]> {
+  let query = supabase
+    .from('budget_plans')
+    .select(`
+      *,
+      records:budget_period_records (*)
+    `)
+    .order('created_at', { ascending: false });
+  
+  if (status) {
+    query = query.eq('status', status);
+  }
+  
+  const { data, error } = await query;
+  if (error) throw error;
+  
+  return (data || []) as BudgetPlanWithRecords[];
+}
+
+/**
+ * 获取单个预算计划
+ */
+export async function getBudgetPlan(id: string): Promise<BudgetPlanWithRecords | null> {
+  const { data, error } = await supabase
+    .from('budget_plans')
+    .select(`
+      *,
+      records:budget_period_records (*)
+    `)
+    .eq('id', id)
+    .single();
+  
+  if (error && error.code !== 'PGRST116') throw error;
+  return data as BudgetPlanWithRecords | null;
+}
+
+/**
+ * 获取总支出计划（只有一个）
+ */
+export async function getTotalBudgetPlan(): Promise<BudgetPlanWithRecords | null> {
+  const { data, error } = await supabase
+    .from('budget_plans')
+    .select(`
+      *,
+      records:budget_period_records (*)
+    `)
+    .eq('plan_type', 'total')
+    .neq('status', 'expired')
+    .maybeSingle();
+  
+  if (error) throw error;
+  return data as BudgetPlanWithRecords | null;
+}
+
+/**
+ * 计算周期的开始和结束日期
+ */
+function calculatePeriodDates(startDate: string, period: 'weekly' | 'monthly', periodIndex: number): { start: string; end: string } {
+  const start = new Date(startDate);
+  
+  if (period === 'weekly') {
+    // 周度：每7天一个周期
+    start.setDate(start.getDate() + (periodIndex - 1) * 7);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 6);
+    return {
+      start: start.toISOString().split('T')[0],
+      end: end.toISOString().split('T')[0],
+    };
+  } else {
+    // 月度：自然月
+    start.setMonth(start.getMonth() + (periodIndex - 1));
+    const end = new Date(start);
+    end.setMonth(end.getMonth() + 1);
+    end.setDate(end.getDate() - 1);
+    return {
+      start: start.toISOString().split('T')[0],
+      end: end.toISOString().split('T')[0],
+    };
+  }
+}
+
+/**
+ * 计算计划结束日期（12个周期后）
+ */
+function calculatePlanEndDate(startDate: string, period: 'weekly' | 'monthly'): string {
+  const start = new Date(startDate);
+  
+  if (period === 'weekly') {
+    // 12周 = 84天
+    start.setDate(start.getDate() + 84 - 1);
+  } else {
+    // 12个月
+    start.setMonth(start.getMonth() + 12);
+    start.setDate(start.getDate() - 1);
+  }
+  
+  return start.toISOString().split('T')[0];
+}
+
+export interface CreateBudgetPlanData {
+  plan_type: 'category' | 'total';
+  category_name?: string;
+  period: 'weekly' | 'monthly';
+  hard_limit: number;
+  limit_currency?: string;
+  soft_limit_enabled?: boolean;
+  account_filter_mode?: 'all' | 'include' | 'exclude';
+  account_filter_ids?: string[];
+  included_categories?: string[];
+  start_date: string;
+}
+
+/**
+ * 创建预算计划
+ */
+export async function createBudgetPlan(data: CreateBudgetPlanData): Promise<BudgetPlanRow> {
+  const endDate = calculatePlanEndDate(data.start_date, data.period);
+  
+  const { data: plan, error } = await supabase
+    .from('budget_plans')
+    .insert({
+      plan_type: data.plan_type,
+      category_name: data.category_name || null,
+      period: data.period,
+      hard_limit: data.hard_limit,
+      limit_currency: data.limit_currency || 'CNY',
+      soft_limit_enabled: data.soft_limit_enabled ?? true,
+      status: 'active',
+      account_filter_mode: data.account_filter_mode || 'all',
+      account_filter_ids: data.account_filter_ids || null,
+      start_date: data.start_date,
+      end_date: endDate,
+      included_categories: data.included_categories || null,
+      round_number: 1,
+    })
+    .select()
+    .single();
+  
+  if (error) throw error;
+  
+  const budgetPlan = plan as BudgetPlanRow;
+
+  // 创建 12 个周期记录
+  const periodRecords = [];
+  for (let i = 1; i <= 12; i++) {
+    const { start, end } = calculatePeriodDates(data.start_date, data.period, i);
+    periodRecords.push({
+      plan_id: budgetPlan.id,
+      round_number: 1,
+      period_index: i,
+      period_start: start,
+      period_end: end,
+      hard_limit: data.hard_limit,
+      soft_limit: null, // 前3个周期没有柔性约束
+      indicator_status: 'pending' as const,
+    });
+  }
+  
+  const { error: recordsError } = await supabase
+    .from('budget_period_records')
+    .insert(periodRecords);
+  
+  if (recordsError) throw recordsError;
+  
+  return budgetPlan;
+}
+
+/**
+ * 更新预算计划
+ */
+export async function updateBudgetPlan(
+  id: string,
+  data: Partial<Pick<BudgetPlanRow, 'hard_limit' | 'soft_limit_enabled' | 'account_filter_mode' | 'account_filter_ids' | 'included_categories' | 'status'>>
+): Promise<void> {
+  const { error } = await supabase
+    .from('budget_plans')
+    .update({
+      ...data,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id);
+  
+  if (error) throw error;
+  
+  // 如果更新了刚性约束，同步更新未来周期的 hard_limit
+  if (data.hard_limit !== undefined) {
+    const today = new Date().toISOString().split('T')[0];
+    await supabase
+      .from('budget_period_records')
+      .update({ hard_limit: data.hard_limit })
+      .eq('plan_id', id)
+      .gte('period_start', today);
+  }
+}
+
+/**
+ * 修改计划周期（会重置12周期进度）
+ */
+export async function changeBudgetPlanPeriod(
+  id: string,
+  newPeriod: 'weekly' | 'monthly',
+  newStartDate: string
+): Promise<void> {
+  // 获取当前计划
+  const { data: plan, error: fetchError } = await supabase
+    .from('budget_plans')
+    .select('*')
+    .eq('id', id)
+    .single();
+  
+  if (fetchError) throw fetchError;
+  
+  const budgetPlan = plan as BudgetPlanRow;
+
+  const newEndDate = calculatePlanEndDate(newStartDate, newPeriod);
+  const newRoundNumber = (budgetPlan.round_number || 1) + 1;
+  
+  // 更新计划
+  const { error: updateError } = await supabase
+    .from('budget_plans')
+    .update({
+      period: newPeriod,
+      start_date: newStartDate,
+      end_date: newEndDate,
+      round_number: newRoundNumber,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id);
+  
+  if (updateError) throw updateError;
+  
+  // 删除旧的周期记录
+  await supabase
+    .from('budget_period_records')
+    .delete()
+    .eq('plan_id', id)
+    .eq('round_number', budgetPlan.round_number);
+  
+  // 创建新的 12 个周期记录
+  const periodRecords = [];
+  for (let i = 1; i <= 12; i++) {
+    const { start, end } = calculatePeriodDates(newStartDate, newPeriod, i);
+    periodRecords.push({
+      plan_id: id,
+      round_number: newRoundNumber,
+      period_index: i,
+      period_start: start,
+      period_end: end,
+      hard_limit: budgetPlan.hard_limit,
+      soft_limit: null,
+      indicator_status: 'pending' as const,
+    });
+  }
+  
+  const { error: recordsError } = await supabase
+    .from('budget_period_records')
+    .insert(periodRecords);
+  
+  if (recordsError) throw recordsError;
+}
+
+/**
+ * 暂停/恢复预算计划
+ */
+export async function toggleBudgetPlanStatus(id: string, status: 'active' | 'paused'): Promise<void> {
+  const { error } = await supabase
+    .from('budget_plans')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  
+  if (error) throw error;
+}
+
+/**
+ * 再启动过期计划
+ */
+export async function restartBudgetPlan(
+  id: string,
+  options: {
+    newHardLimit?: number;
+    newStartDate?: string;
+  } = {}
+): Promise<void> {
+  // 获取当前计划
+  const { data: plan, error: fetchError } = await supabase
+    .from('budget_plans')
+    .select('*')
+    .eq('id', id)
+    .single();
+  
+  if (fetchError) throw fetchError;
+  
+  const budgetPlan = plan as BudgetPlanRow;
+
+  const newStartDate = options.newStartDate || new Date().toISOString().split('T')[0];
+  const newHardLimit = options.newHardLimit ?? budgetPlan.hard_limit;
+  const newEndDate = calculatePlanEndDate(newStartDate, budgetPlan.period);
+  const newRoundNumber = (budgetPlan.round_number || 1) + 1;
+  
+  // 更新计划
+  const { error: updateError } = await supabase
+    .from('budget_plans')
+    .update({
+      hard_limit: newHardLimit,
+      start_date: newStartDate,
+      end_date: newEndDate,
+      round_number: newRoundNumber,
+      status: 'active',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id);
+  
+  if (updateError) throw updateError;
+  
+  // 创建新的 12 个周期记录
+  const periodRecords = [];
+  for (let i = 1; i <= 12; i++) {
+    const { start, end } = calculatePeriodDates(newStartDate, budgetPlan.period, i);
+    periodRecords.push({
+      plan_id: id,
+      round_number: newRoundNumber,
+      period_index: i,
+      period_start: start,
+      period_end: end,
+      hard_limit: newHardLimit,
+      soft_limit: null,
+      indicator_status: 'pending' as const,
+    });
+  }
+  
+  const { error: recordsError } = await supabase
+    .from('budget_period_records')
+    .insert(periodRecords);
+  
+  if (recordsError) throw recordsError;
+}
+
+/**
+ * 删除预算计划
+ */
+export async function deleteBudgetPlan(id: string): Promise<void> {
+  const { error } = await supabase
+    .from('budget_plans')
+    .delete()
+    .eq('id', id);
+  
+  if (error) throw error;
+}
+
+// --- Currency Rates ---
+
+/**
+ * 获取所有汇率
+ */
+export async function getCurrencyRates(): Promise<CurrencyRateRow[]> {
+  const { data, error } = await supabase
+    .from('currency_rates')
+    .select('*')
+    .order('from_currency', { ascending: true });
+  
+  if (error) throw error;
+  return (data || []) as CurrencyRateRow[];
+}
+
+/**
+ * 获取指定汇率
+ */
+export async function getCurrencyRate(from: string, to: string): Promise<number> {
+  if (from === to) return 1;
+  
+  const { data, error } = await supabase
+    .from('currency_rates')
+    .select('rate')
+    .eq('from_currency', from)
+    .eq('to_currency', to)
+    .maybeSingle();
+  
+  if (error) throw error;
+  if (!data) return 1; // 如果没有汇率，返回 1
+  
+  return data.rate;
+}
+
+/**
+ * 更新汇率
+ */
+export async function updateCurrencyRate(from: string, to: string, rate: number): Promise<void> {
+  const { error } = await supabase
+    .from('currency_rates')
+    .upsert({
+      from_currency: from,
+      to_currency: to,
+      rate,
+      updated_at: new Date().toISOString(),
+    });
+  
+  if (error) throw error;
+}
+
+// --- Budget Calculation ---
+
+/**
+ * 计算指定周期内某标签的消费金额
+ */
+export async function calculateCategorySpending(
+  categoryName: string,
+  startDate: string,
+  endDate: string,
+  targetCurrency: string,
+  accountFilterMode: 'all' | 'include' | 'exclude' = 'all',
+  accountFilterIds: string[] | null = null
+): Promise<number> {
+  let query = supabase
+    .from('transactions')
+    .select(`
+      amount,
+      accounts (currency)
+    `)
+    .eq('category', categoryName)
+    .in('type', ['expense', 'transfer'])
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .lt('amount', 0); // 只计算支出（负数）
+  
+  // 账户筛选
+  if (accountFilterMode === 'include' && accountFilterIds && accountFilterIds.length > 0) {
+    query = query.in('account_id', accountFilterIds);
+  } else if (accountFilterMode === 'exclude' && accountFilterIds && accountFilterIds.length > 0) {
+    // Supabase 不直接支持 NOT IN，需要用其他方式
+    // 这里简化处理：获取所有账户，排除指定的
+    const { data: allAccounts } = await supabase.from('accounts').select('id');
+    const includedIds = (allAccounts || [])
+      .map(a => a.id)
+      .filter(id => !accountFilterIds.includes(id));
+    if (includedIds.length > 0) {
+      query = query.in('account_id', includedIds);
+    }
+  }
+  
+  const { data, error } = await query;
+  if (error) throw error;
+  
+  // 汇总金额（需要汇率转换）
+  let total = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const tx of (data || []) as any[]) {
+    const txCurrency = (tx.accounts as { currency: string } | null)?.currency || 'CNY';
+    const rate = await getCurrencyRate(txCurrency, targetCurrency);
+    total += Math.abs(tx.amount) * rate;
+  }
+  
+  return total;
+}
+
+/**
+ * 计算指定周期内总支出金额
+ */
+export async function calculateTotalSpending(
+  includedCategories: string[] | null,
+  startDate: string,
+  endDate: string,
+  targetCurrency: string,
+  accountFilterMode: 'all' | 'include' | 'exclude' = 'all',
+  accountFilterIds: string[] | null = null
+): Promise<number> {
+  let query = supabase
+    .from('transactions')
+    .select(`
+      amount,
+      accounts (currency)
+    `)
+    .in('type', ['expense', 'transfer'])
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .lt('amount', 0);
+  
+  // 标签筛选
+  if (includedCategories && includedCategories.length > 0) {
+    query = query.in('category', includedCategories);
+  }
+  
+  // 账户筛选
+  if (accountFilterMode === 'include' && accountFilterIds && accountFilterIds.length > 0) {
+    query = query.in('account_id', accountFilterIds);
+  } else if (accountFilterMode === 'exclude' && accountFilterIds && accountFilterIds.length > 0) {
+    const { data: allAccounts } = await supabase.from('accounts').select('id');
+    const includedIds = (allAccounts || [])
+      .map(a => a.id)
+      .filter(id => !accountFilterIds.includes(id));
+    if (includedIds.length > 0) {
+      query = query.in('account_id', includedIds);
+    }
+  }
+  
+  const { data, error } = await query;
+  if (error) throw error;
+  
+  let total = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const tx of (data || []) as any[]) {
+    const txCurrency = (tx.accounts as { currency: string } | null)?.currency || 'CNY';
+    const rate = await getCurrencyRate(txCurrency, targetCurrency);
+    total += Math.abs(tx.amount) * rate;
+  }
+  
+  return total;
+}
+
+/**
+ * 计算柔性约束（自然时间前3个周期的平均消费）
+ * 
+ * 例如：
+ * - 月度计划，当前是4月 → 计算1月、2月、3月的实际消费平均值
+ * - 周度计划，当前是第15周 → 计算第12、13、14周的实际消费平均值
+ */
+export async function calculateSoftLimit(
+  plan: BudgetPlanRow,
+  currentPeriodStart: string,
+  currentPeriodEnd: string
+): Promise<number | null> {
+  // 计算前3个周期的时间范围
+  const periodRanges: Array<{ start: string; end: string }> = [];
+  const currentStart = new Date(currentPeriodStart);
+  
+  if (plan.period === 'monthly') {
+    // 月度：往前推3个自然月
+    for (let i = 1; i <= 3; i++) {
+      const monthStart = new Date(currentStart);
+      monthStart.setMonth(monthStart.getMonth() - i);
+      monthStart.setDate(1);
+      
+      const monthEnd = new Date(monthStart);
+      monthEnd.setMonth(monthEnd.getMonth() + 1);
+      monthEnd.setDate(0); // 上月最后一天
+      
+      periodRanges.push({
+        start: monthStart.toISOString().split('T')[0],
+        end: monthEnd.toISOString().split('T')[0],
+      });
+    }
+  } else {
+    // 周度：往前推3个自然周（7天）
+    for (let i = 1; i <= 3; i++) {
+      const weekStart = new Date(currentStart);
+      weekStart.setDate(weekStart.getDate() - i * 7);
+      
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekEnd.getDate() + 6);
+      
+      periodRanges.push({
+        start: weekStart.toISOString().split('T')[0],
+        end: weekEnd.toISOString().split('T')[0],
+      });
+    }
+  }
+  
+  // 计算每个周期的实际消费
+  const amounts: number[] = [];
+  
+  for (const range of periodRanges) {
+    let amount: number;
+    if (plan.plan_type === 'total') {
+      amount = await calculateTotalSpending(
+        plan.included_categories,
+        range.start,
+        range.end,
+        plan.limit_currency,
+        plan.account_filter_mode,
+        plan.account_filter_ids
+      );
+    } else {
+      amount = await calculateCategorySpending(
+        plan.category_name!,
+        range.start,
+        range.end,
+        plan.limit_currency,
+        plan.account_filter_mode,
+        plan.account_filter_ids
+      );
+    }
+    amounts.push(amount);
+  }
+  
+  // 计算平均值
+  const sum = amounts.reduce((acc, a) => acc + a, 0);
+  return sum / 3;
+}
+
+/**
+ * 判断指示灯状态
+ */
+export function determineIndicatorStatus(
+  actualAmount: number,
+  hardLimit: number,
+  softLimit: number | null
+): 'star' | 'green' | 'red' {
+  // 刚性约束是底线
+  if (actualAmount > hardLimit) {
+    return 'red'; // 超过刚性约束 = 红灯
+  }
+  
+  // 刚性达标的情况下，看柔性
+  if (softLimit !== null && actualAmount <= softLimit) {
+    return 'star'; // 同时低于柔性 = 星星
+  }
+  
+  return 'green'; // 刚性达标但超过柔性 = 绿灯
+}
+
+/**
+ * 更新预算周期记录（计算实际消费和状态）
+ */
+export async function updateBudgetPeriodRecord(recordId: string): Promise<void> {
+  // 获取记录
+  const { data: record, error: recordError } = await supabase
+    .from('budget_period_records')
+    .select('*, budget_plans (*)')
+    .eq('id', recordId)
+    .single();
+  
+  if (recordError) throw recordError;
+  
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const budgetRecord = record as any;
+  const plan = budgetRecord.budget_plans as BudgetPlanRow;
+  
+  // 计算实际消费
+  let actualAmount: number;
+  if (plan.plan_type === 'total') {
+    actualAmount = await calculateTotalSpending(
+      plan.included_categories,
+      budgetRecord.period_start,
+      budgetRecord.period_end,
+      plan.limit_currency,
+      plan.account_filter_mode,
+      plan.account_filter_ids
+    );
+  } else {
+    actualAmount = await calculateCategorySpending(
+      plan.category_name!,
+      budgetRecord.period_start,
+      budgetRecord.period_end,
+      plan.limit_currency,
+      plan.account_filter_mode,
+      plan.account_filter_ids
+    );
+  }
+  
+  // 计算柔性约束（基于自然时间的前3个周期）
+  let softLimit: number | null = null;
+  if (plan.soft_limit_enabled) {
+    softLimit = await calculateSoftLimit(plan, budgetRecord.period_start, budgetRecord.period_end);
+  }
+  
+  // 判断状态
+  const indicatorStatus = determineIndicatorStatus(actualAmount, budgetRecord.hard_limit, softLimit);
+  
+  // 更新记录
+  const { error: updateError } = await supabase
+    .from('budget_period_records')
+    .update({
+      actual_amount: actualAmount,
+      soft_limit: softLimit,
+      indicator_status: indicatorStatus,
+    })
+    .eq('id', recordId);
+  
+  if (updateError) throw updateError;
+}
+
+/**
+ * 更新所有活跃计划的当前周期
+ */
+export async function updateAllActiveBudgetPeriods(): Promise<void> {
+  const today = new Date().toISOString().split('T')[0];
+  
+  // 获取所有活跃计划的当前周期记录
+  const { data: records, error } = await supabase
+    .from('budget_period_records')
+    .select('id, plan_id, period_start, period_end')
+    .lte('period_start', today)
+    .gte('period_end', today);
+  
+  if (error) throw error;
+  
+  for (const record of (records || [])) {
+    await updateBudgetPeriodRecord(record.id);
+  }
+}
+
+/**
+ * 检查并更新过期计划状态
+ */
+export async function checkExpiredBudgetPlans(): Promise<void> {
+  const today = new Date().toISOString().split('T')[0];
+  
+  const { error } = await supabase
+    .from('budget_plans')
+    .update({ status: 'expired' })
+    .eq('status', 'active')
+    .lt('end_date', today);
+  
+  if (error) throw error;
+}
+
+/**
+ * 获取仪表盘预算数据
+ */
+export async function getDashboardBudgetData(): Promise<{
+  plans: Array<{
+    plan: BudgetPlanRow;
+    currentPeriod: BudgetPeriodRecordRow | null;
+    allRecords: BudgetPeriodRecordRow[];
+  }>;
+}> {
+  const today = new Date().toISOString().split('T')[0];
+  
+  // 获取所有活跃计划
+  const { data: plans, error } = await supabase
+    .from('budget_plans')
+    .select(`
+      *,
+      records:budget_period_records (*)
+    `)
+    .eq('status', 'active')
+    .order('plan_type', { ascending: false }) // total 排在前面
+    .order('created_at', { ascending: true });
+  
+  if (error) throw error;
+  
+  const result = [];
+  
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const plan of (plans || []) as any[]) {
+    const records = (plan.records || []) as BudgetPeriodRecordRow[];
+    
+    // 找到当前周期
+    const currentPeriod = records.find(
+      r => r.period_start <= today && r.period_end >= today
+    ) || null;
+    
+    result.push({
+      plan: plan as BudgetPlanRow,
+      currentPeriod,
+      allRecords: records.sort((a, b) => a.period_index - b.period_index),
+    });
+  }
+  
+  return { plans: result };
 }
