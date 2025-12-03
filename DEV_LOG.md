@@ -1,6 +1,81 @@
 # 开发日志 (Development Log)
 
-## 2025-11-30
+## 2025-12-02
+- **数据导入导出功能完整实现**：
+    - **后端模块** (`lib/bookkeeping/importers/` & `lib/bookkeeping/exporters.ts`):
+        - **智能解析器**：
+            - `xlsParser.ts`：自动识别微信/支付宝账单表头，跳过元信息行，灵活解析日期和金额。
+            - `nlParser.ts`：解析分号分隔的自然语言交易记录（未来支持 AI 截图转文本）。
+        - **验证与检测**：
+            - `validator.ts`：全或无原则验证，精确匹配账户名（无模糊匹配），验证所有必填字段。
+            - `duplicateDetector.ts`：基于日期、账户、金额、类型、分类的多字段匹配（匹配度 >= 75% 视为疑似重复）。
+            - `reportGenerator.ts`：生成详细导入报告（统计、账户/分类分布、新标签、疑似重复列表）。
+        - **导出模块**：
+            - `exporters.ts`：支持 CSV/XLSX 格式，智能合并划转记录（将同一 `transfer_group_id` 的两条记录合并为一条），添加币种符号（¥/$/<function_calls>等）。
+            - `formatTransactionsForExport`：从 `tx.accounts.currency` 获取币种，为金额添加符号，支持跨币种划转显示不同币种。
+        - **后端 Actions** (`lib/bookkeeping/actions.ts`):
+            - `importTransactionsFromXLS(file)`：Excel 文件导入，返回 `ImportResult`（包含 success、errors、report）。
+            - `importTransactionsFromText(text)`：文本格式批量导入。
+            - `exportData(params)`：数据导出，支持流水/快照、账户筛选、时间范围、CSV/XLSX 格式。
+    - **前端组件** (`app/(modules)/bookkeeping/settings/components/`):
+        - `ImportSection.tsx`：Tab 切换（文件导入/文本导入），文件上传，格式说明。
+        - `ExportSection.tsx`：数据类型选择（流水/快照），多账户筛选，时间范围，格式选择。
+        - `ImportPreview.tsx`：成功报告展示、疑似重复警告、错误列表（带详细建议）。
+    - **核心特性**：
+        - ✅ 全或无原则（有任何错误立即停止，避免部分导入）
+        - ✅ 自动创建新标签（标签不存在时自动创建，使用 Map 去重避免重复）
+        - ✅ 精确账户匹配（必须完全匹配，防止误操作）
+        - ✅ 重复检测提醒（疑似重复交易列表）
+        - ✅ 详细导入报告（统计、分布、新标签）
+
+- **Bug 修复（第一轮）**：
+    - **问题 1：导出账户列为空**
+        - 原因：代码从 `tx.account_name` 获取，但数据实际在 `tx.accounts.name`
+        - 修复：改为 `tx.accounts?.name || tx.account_name || ''`
+    - **问题 2：划转记录未合并**
+        - 原因：导出时没有识别和合并同一 `transfer_group_id` 的记录
+        - 修复：按 `transfer_group_id` 分组，找出转出/转入记录合并为一条
+    - **问题 3：标签重复错误**
+        - 原因：使用 Set 对象去重失败（基于引用），且创建前未检查
+        - 修复：改用 Map（以 name 为键），创建前查询并捕获唯一约束错误
+
+- **Bug 修复（第二轮）**：
+    - **问题 1：导入金额符号错误**
+        - 原因：`createTransaction` 没有根据类型调整金额符号
+        - 修复：在 `createTransaction` 中确保支出为负数，收入为正数：
+          ```typescript
+          let finalAmount = Math.abs(data.amount);
+          if (data.type === 'expense') {
+            finalAmount = -finalAmount;
+          }
+          ```
+    - **问题 2：导出缺少币种符号**
+        - 原因：导出时只显示数字，没有获取币种信息
+        - 修复：添加 `CURRENCY_SYMBOLS` 映射和 `formatAmountWithCurrency` 函数，从 `tx.accounts.currency` 获取币种
+
+- **自动快照功能验证**：
+    - **已完整实现**（无需修改）：
+        - 数据库字段：`auto_snapshot_enabled`, `snapshot_interval_days`, `snapshot_tolerance`
+        - `autoSnapshotCheck()`：根据设置的间隔天数自动为账户创建快照
+        - `runGlobalRefresh()`：执行周期任务 + 自动快照检查
+        - `handleDailyCheckin()`：每日打卡触发全局刷新
+        - 设置页面：可配置自动快照开关、间隔、容差阈值
+        - 触发机制：每日打卡按钮 → 全局刷新 → 自动快照检查
+
+- **设置页面保存按钮修复**：
+    - **问题**：自动快照设置 section 缺少保存按钮，切换设置后只更新前端状态，未写入数据库
+    - **修复**：为自动快照设置添加"保存设置"按钮，调用 `handleSettingsSave()`
+    - **验证**：检查所有 section 的保存机制（金额显示规则、颜色配色、汇率、标签管理）均正常
+
+- **关键技术提示**：
+    - **导入验证**：使用 `Map` 而不是 `Set` 去重对象，创建前再次查询避免并发冲突
+    - **划转合并**：按 `transfer_group_id` 分组，`amount < 0` 为转出，`amount > 0` 为转入
+    - **币种处理**：从 `accounts.currency` 获取币种，使用 `CURRENCY_SYMBOLS` 映射添加符号
+    - **金额符号**：数据库存储规则：支出为负数，收入为正数，`createTransaction` 强制转换
+    - **全或无原则**：任何验证错误立即 `return { success: false, errors }`，不执行部分导入
+
+---
+
 - **预算管理模块 (Budget Management)**：
     - **数据库支持**：新增 `budget_plans`（预算计划主表）、`budget_period_records`（周期执行记录表）、`currency_rates`（汇率表）。
     - **后端 Actions**：

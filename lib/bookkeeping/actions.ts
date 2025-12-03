@@ -71,10 +71,16 @@ export async function createTransaction(data: TransactionData) {
     return createTransfer(data);
   }
 
+  // 确保支出是负数，收入是正数
+  let finalAmount = Math.abs(data.amount);
+  if (data.type === 'expense') {
+    finalAmount = -finalAmount;
+  }
+
   const { error } = await supabase.from('transactions').insert({
     account_id: data.account_id,
     type: data.type,
-    amount: data.amount,
+    amount: finalAmount,
     category: data.category,
     date: data.date,
     description: data.description,
@@ -236,7 +242,7 @@ export async function createSnapshot(data: { account_id: string; balance: number
   const dateOnly = data.date.split('T')[0];
   const startOfDay = `${dateOnly}T00:00:00.000Z`;
   const endOfDay = `${dateOnly}T23:59:59.999Z`;
-  
+
   // 检查同一天是否已有快照
   const { data: existingSnapshots, error: queryError } = await supabase
     .from('snapshots')
@@ -244,19 +250,19 @@ export async function createSnapshot(data: { account_id: string; balance: number
     .eq('account_id', data.account_id)
     .gte('date', startOfDay)
     .lte('date', endOfDay);
-  
+
   if (queryError) throw queryError;
-  
+
   if (existingSnapshots && existingSnapshots.length > 0) {
     // 更新最新的一条（如果有多条，只更新第一条，其他删除）
     const latestId = existingSnapshots[0].id;
-    
+
     // 删除多余的快照（如果有的话）
     if (existingSnapshots.length > 1) {
       const idsToDelete = existingSnapshots.slice(1).map(s => s.id);
       await supabase.from('snapshots').delete().in('id', idsToDelete);
     }
-    
+
     // 更新快照
     const { error: updateError } = await supabase
       .from('snapshots')
@@ -266,16 +272,16 @@ export async function createSnapshot(data: { account_id: string; balance: number
         type: data.type || 'Manual',
       })
       .eq('id', latestId);
-    
+
     if (updateError) throw updateError;
   } else {
     // 新增快照
     const { error: insertError } = await supabase.from('snapshots').insert({
-    account_id: data.account_id,
-    balance: data.balance,
-    date: data.date,
+      account_id: data.account_id,
+      balance: data.balance,
+      date: data.date,
       type: data.type || 'Manual',
-  });
+    });
     if (insertError) throw insertError;
   }
 }
@@ -369,7 +375,7 @@ export async function runReconciliationCheck({
   await supabase.from('reconciliation_issues').delete().eq('account_id', accountId);
 
   const snapshots = (snapshotsData || []) as SnapshotRow[];
-  
+
   if (snapshots.length < 2) {
     return { inserted: 0, segments: [] as ReconciliationSegment[], message: '缺少足够的时点快照，无法查账' };
   }
@@ -661,16 +667,16 @@ export async function togglePeriodicTaskActive(id: string, isActive: boolean) {
     .update({ is_active: isActive })
     .eq('id', id)
     .select();
-  
+
   if (error) {
     console.error('Toggle active error:', error);
     throw new Error(error.message || '更新任务状态失败');
   }
-  
+
   if (!data || data.length === 0) {
     throw new Error('未找到对应任务');
   }
-  
+
   return data[0];
 }
 
@@ -681,17 +687,17 @@ export async function togglePeriodicTaskActive(id: string, isActive: boolean) {
  */
 export async function getTodayCheckin(): Promise<{ checked: boolean; checkedAt: string | null }> {
   const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-  
+
   const { data, error } = await supabase
     .from('daily_checkins')
     .select('*')
     .eq('check_date', today)
     .maybeSingle();
-  
+
   if (error) throw error;
-  
+
   const checkin = data as DailyCheckinRow | null;
-  
+
   return {
     checked: !!checkin,
     checkedAt: checkin?.checked_at || null,
@@ -703,25 +709,25 @@ export async function getTodayCheckin(): Promise<{ checked: boolean; checkedAt: 
  */
 export async function recordCheckin(): Promise<{ success: boolean; alreadyChecked: boolean }> {
   const today = new Date().toISOString().split('T')[0];
-  
+
   // 检查是否已打卡
   const { data: existing } = await supabase
     .from('daily_checkins')
     .select('id')
     .eq('check_date', today)
     .maybeSingle();
-  
+
   if (existing) {
     return { success: true, alreadyChecked: true };
   }
-  
+
   // 插入打卡记录
   const { error } = await supabase
     .from('daily_checkins')
     .insert({ check_date: today });
-  
+
   if (error) throw error;
-  
+
   return { success: true, alreadyChecked: false };
 }
 
@@ -730,7 +736,7 @@ export async function recordCheckin(): Promise<{ success: boolean; alreadyChecke
  */
 function calculateNextRunDate(currentDate: string, frequency: string): string {
   const date = new Date(currentDate);
-  
+
   switch (frequency) {
     case 'daily':
       date.setDate(date.getDate() + 1);
@@ -776,7 +782,7 @@ function calculateNextRunDate(currentDate: string, frequency: string): string {
         }
       }
   }
-  
+
   return date.toISOString().split('T')[0];
 }
 
@@ -789,32 +795,32 @@ export async function executePeriodicTasks(): Promise<{
   tasks: Array<{ taskId: string; taskName: string; date: string }>;
 }> {
   const today = new Date().toISOString().split('T')[0];
-  
+
   // 1. 获取所有启用的周期任务
   const { data: tasksData, error: tasksError } = await supabase
     .from('periodic_tasks')
     .select('*')
     .eq('is_active', true)
     .lte('next_run_date', today);
-  
+
   if (tasksError) throw tasksError;
-  
+
   const tasks = (tasksData || []) as PeriodicTaskRow[];
   const executedTasks: Array<{ taskId: string; taskName: string; date: string }> = [];
-  
+
   // 2. 遍历每个任务
   for (const task of tasks) {
     let currentRunDate = task.next_run_date;
-    
+
     // 循环处理所有到期的执行（补偿多期未打卡的情况）
     while (currentRunDate <= today) {
       // 创建流水
       const transactionDate = `${currentRunDate}T12:00:00.000Z`; // 中午12点
-      
+
       if (task.type === 'transfer' && task.to_account_id) {
         // 划转：创建两笔关联流水
         const groupId = crypto.randomUUID();
-        
+
         // 转出（负数）
         await supabase.from('transactions').insert({
           account_id: task.account_id,
@@ -825,7 +831,7 @@ export async function executePeriodicTasks(): Promise<{
           date: transactionDate,
           transfer_group_id: groupId,
         });
-        
+
         // 转入（正数）
         const toAmount = task.to_amount || task.amount;
         await supabase.from('transactions').insert({
@@ -839,10 +845,10 @@ export async function executePeriodicTasks(): Promise<{
         });
       } else {
         // 收入或支出
-        const amount = task.type === 'expense' 
-          ? -Math.abs(task.amount) 
+        const amount = task.type === 'expense'
+          ? -Math.abs(task.amount)
           : Math.abs(task.amount);
-        
+
         await supabase.from('transactions').insert({
           account_id: task.account_id,
           type: task.type,
@@ -852,24 +858,24 @@ export async function executePeriodicTasks(): Promise<{
           date: transactionDate,
         });
       }
-      
+
       executedTasks.push({
         taskId: task.id,
         taskName: task.category,
         date: currentRunDate,
       });
-      
+
       // 计算下一次执行日期
       currentRunDate = calculateNextRunDate(currentRunDate, task.frequency);
     }
-    
+
     // 更新任务的下次执行日期
     await supabase
       .from('periodic_tasks')
       .update({ next_run_date: currentRunDate })
       .eq('id', task.id);
   }
-  
+
   return {
     executed: executedTasks.length,
     tasks: executedTasks,
@@ -886,28 +892,28 @@ export async function autoSnapshotCheck(): Promise<{
 }> {
   // 1. 获取设置
   const settings = await getBookkeepingSettings();
-  
+
   if (!settings.auto_snapshot_enabled) {
     return { created: 0, accounts: [] };
   }
-  
+
   const intervalDays = settings.snapshot_interval_days;
   const today = new Date();
   const cutoffDate = new Date(today);
   cutoffDate.setDate(cutoffDate.getDate() - intervalDays);
   const cutoffISO = cutoffDate.toISOString();
-  
+
   // 2. 获取所有账户
   const { data: accountsData, error: accountsError } = await supabase
     .from('accounts')
     .select('id, name, currency')
     .order('created_at', { ascending: true });
-  
+
   if (accountsError) throw accountsError;
   const accounts = accountsData || [];
-  
+
   const createdSnapshots: Array<{ accountId: string; accountName: string; balance: number }> = [];
-  
+
   // 3. 检查每个账户的最近快照
   for (const account of accounts) {
     // 获取该账户最近的快照
@@ -918,21 +924,21 @@ export async function autoSnapshotCheck(): Promise<{
       .order('date', { ascending: false })
       .limit(1)
       .maybeSingle();
-    
+
     if (snapshotError) {
       console.error(`Error fetching snapshot for account ${account.id}:`, snapshotError);
       continue;
     }
-    
+
     const lastSnapshot = lastSnapshotData as SnapshotRow | null;
-    
+
     // 判断是否需要创建新快照
     const needsSnapshot = !lastSnapshot || new Date(lastSnapshot.date) < new Date(cutoffISO);
-    
+
     if (needsSnapshot) {
       // 计算当前余额
       const balance = await calculateBalance(supabase, account.id, today);
-      
+
       // 创建自动快照（使用 createSnapshot 函数，自动处理覆盖逻辑）
       try {
         await createSnapshot({
@@ -941,7 +947,7 @@ export async function autoSnapshotCheck(): Promise<{
           date: today.toISOString(),
           type: 'Auto',
         });
-        
+
         createdSnapshots.push({
           accountId: account.id,
           accountName: account.name,
@@ -953,7 +959,7 @@ export async function autoSnapshotCheck(): Promise<{
       }
     }
   }
-  
+
   return {
     created: createdSnapshots.length,
     accounts: createdSnapshots,
@@ -968,22 +974,22 @@ export async function createManualSnapshotsForAllAccounts(): Promise<{
   accounts: Array<{ accountId: string; accountName: string; balance: number }>;
 }> {
   const today = new Date();
-  
+
   // 获取所有账户
   const { data: accountsData, error: accountsError } = await supabase
     .from('accounts')
     .select('id, name, currency')
     .order('created_at', { ascending: true });
-  
+
   if (accountsError) throw accountsError;
   const accounts = accountsData || [];
-  
+
   const createdSnapshots: Array<{ accountId: string; accountName: string; balance: number }> = [];
-  
+
   for (const account of accounts) {
     // 计算当前余额
     const balance = await calculateBalance(supabase, account.id, today);
-    
+
     // 创建手动快照（使用 createSnapshot 函数，自动处理覆盖逻辑）
     try {
       await createSnapshot({
@@ -992,7 +998,7 @@ export async function createManualSnapshotsForAllAccounts(): Promise<{
         date: today.toISOString(),
         type: 'Manual',
       });
-      
+
       createdSnapshots.push({
         accountId: account.id,
         accountName: account.name,
@@ -1003,7 +1009,7 @@ export async function createManualSnapshotsForAllAccounts(): Promise<{
       continue;
     }
   }
-  
+
   return {
     created: createdSnapshots.length,
     accounts: createdSnapshots,
@@ -1023,10 +1029,10 @@ export async function getExportData(options: {
   snapshots: Array<SnapshotRow & { account_name: string; account_currency: string }>;
 }> {
   const { startDate, endDate, includeTransactions = true, includeSnapshots = true } = options;
-  
+
   let transactions: Array<TransactionRow & { account_name: string; account_currency: string }> = [];
   let snapshots: Array<SnapshotRow & { account_name: string; account_currency: string }> = [];
-  
+
   if (includeTransactions) {
     let query = supabase
       .from('transactions')
@@ -1035,24 +1041,24 @@ export async function getExportData(options: {
         accounts (name, currency)
       `)
       .order('date', { ascending: true });
-    
+
     if (startDate) {
       query = query.gte('date', startDate);
     }
     if (endDate) {
       query = query.lte('date', endDate);
     }
-    
+
     const { data, error } = await query;
     if (error) throw error;
-    
+
     transactions = (data || []).map((tx: TransactionRow & { accounts: { name: string; currency: string } | null }) => ({
       ...tx,
       account_name: tx.accounts?.name || '',
       account_currency: tx.accounts?.currency || '',
     }));
   }
-  
+
   if (includeSnapshots) {
     let query = supabase
       .from('snapshots')
@@ -1061,24 +1067,24 @@ export async function getExportData(options: {
         accounts (name, currency)
       `)
       .order('date', { ascending: true });
-    
+
     if (startDate) {
       query = query.gte('date', startDate);
     }
     if (endDate) {
       query = query.lte('date', endDate);
     }
-    
+
     const { data, error } = await query;
     if (error) throw error;
-    
+
     snapshots = (data || []).map((snap: SnapshotRow & { accounts: { name: string; currency: string } | null }) => ({
       ...snap,
       account_name: snap.accounts?.name || '',
       account_currency: snap.accounts?.currency || '',
     }));
   }
-  
+
   return { transactions, snapshots };
 }
 
@@ -1092,10 +1098,10 @@ export async function runGlobalRefresh(): Promise<{
 }> {
   // 1. 执行周期性交易
   const periodicResult = await executePeriodicTasks();
-  
+
   // 2. 自动快照检查
   const snapshotResult = await autoSnapshotCheck();
-  
+
   return {
     periodicTasks: periodicResult,
     autoSnapshot: snapshotResult,
@@ -1115,10 +1121,10 @@ export async function handleDailyCheckin(): Promise<{
 }> {
   // 1. 记录打卡
   const checkinResult = await recordCheckin();
-  
+
   // 2. 执行全局刷新
   const refreshResult = await runGlobalRefresh();
-  
+
   return {
     isFirstCheckin: !checkinResult.alreadyChecked,
     refreshResult,
@@ -1142,14 +1148,14 @@ export async function getBudgetPlans(status?: 'active' | 'expired' | 'paused'): 
       records:budget_period_records (*)
     `)
     .order('created_at', { ascending: false });
-  
+
   if (status) {
     query = query.eq('status', status);
   }
-  
+
   const { data, error } = await query;
   if (error) throw error;
-  
+
   return (data || []) as BudgetPlanWithRecords[];
 }
 
@@ -1165,7 +1171,7 @@ export async function getBudgetPlan(id: string): Promise<BudgetPlanWithRecords |
     `)
     .eq('id', id)
     .single();
-  
+
   if (error && error.code !== 'PGRST116') throw error;
   return data as BudgetPlanWithRecords | null;
 }
@@ -1183,7 +1189,7 @@ export async function getTotalBudgetPlan(): Promise<BudgetPlanWithRecords | null
     .eq('plan_type', 'total')
     .neq('status', 'expired')
     .maybeSingle();
-  
+
   if (error) throw error;
   return data as BudgetPlanWithRecords | null;
 }
@@ -1193,7 +1199,7 @@ export async function getTotalBudgetPlan(): Promise<BudgetPlanWithRecords | null
  */
 function calculatePeriodDates(startDate: string, period: 'weekly' | 'monthly', periodIndex: number): { start: string; end: string } {
   const start = new Date(startDate);
-  
+
   if (period === 'weekly') {
     // 周度：每7天一个周期
     start.setDate(start.getDate() + (periodIndex - 1) * 7);
@@ -1221,7 +1227,7 @@ function calculatePeriodDates(startDate: string, period: 'weekly' | 'monthly', p
  */
 function calculatePlanEndDate(startDate: string, period: 'weekly' | 'monthly'): string {
   const start = new Date(startDate);
-  
+
   if (period === 'weekly') {
     // 12周 = 84天
     start.setDate(start.getDate() + 84 - 1);
@@ -1230,7 +1236,7 @@ function calculatePlanEndDate(startDate: string, period: 'weekly' | 'monthly'): 
     start.setMonth(start.getMonth() + 12);
     start.setDate(start.getDate() - 1);
   }
-  
+
   return start.toISOString().split('T')[0];
 }
 
@@ -1252,7 +1258,7 @@ export interface CreateBudgetPlanData {
  */
 export async function createBudgetPlan(data: CreateBudgetPlanData): Promise<BudgetPlanRow> {
   const endDate = calculatePlanEndDate(data.start_date, data.period);
-  
+
   const { data: plan, error } = await supabase
     .from('budget_plans')
     .insert({
@@ -1272,9 +1278,9 @@ export async function createBudgetPlan(data: CreateBudgetPlanData): Promise<Budg
     })
     .select()
     .single();
-  
+
   if (error) throw error;
-  
+
   const budgetPlan = plan as BudgetPlanRow;
 
   // 创建 12 个周期记录
@@ -1292,13 +1298,13 @@ export async function createBudgetPlan(data: CreateBudgetPlanData): Promise<Budg
       indicator_status: 'pending' as const,
     });
   }
-  
+
   const { error: recordsError } = await supabase
     .from('budget_period_records')
     .insert(periodRecords);
-  
+
   if (recordsError) throw recordsError;
-  
+
   return budgetPlan;
 }
 
@@ -1316,9 +1322,9 @@ export async function updateBudgetPlan(
       updated_at: new Date().toISOString(),
     })
     .eq('id', id);
-  
+
   if (error) throw error;
-  
+
   // 如果更新了刚性约束，同步更新未来周期的 hard_limit
   if (data.hard_limit !== undefined) {
     const today = new Date().toISOString().split('T')[0];
@@ -1344,14 +1350,14 @@ export async function changeBudgetPlanPeriod(
     .select('*')
     .eq('id', id)
     .single();
-  
+
   if (fetchError) throw fetchError;
-  
+
   const budgetPlan = plan as BudgetPlanRow;
 
   const newEndDate = calculatePlanEndDate(newStartDate, newPeriod);
   const newRoundNumber = (budgetPlan.round_number || 1) + 1;
-  
+
   // 更新计划
   const { error: updateError } = await supabase
     .from('budget_plans')
@@ -1363,16 +1369,16 @@ export async function changeBudgetPlanPeriod(
       updated_at: new Date().toISOString(),
     })
     .eq('id', id);
-  
+
   if (updateError) throw updateError;
-  
+
   // 删除旧的周期记录
   await supabase
     .from('budget_period_records')
     .delete()
     .eq('plan_id', id)
     .eq('round_number', budgetPlan.round_number);
-  
+
   // 创建新的 12 个周期记录
   const periodRecords = [];
   for (let i = 1; i <= 12; i++) {
@@ -1388,11 +1394,11 @@ export async function changeBudgetPlanPeriod(
       indicator_status: 'pending' as const,
     });
   }
-  
+
   const { error: recordsError } = await supabase
     .from('budget_period_records')
     .insert(periodRecords);
-  
+
   if (recordsError) throw recordsError;
 }
 
@@ -1404,7 +1410,7 @@ export async function toggleBudgetPlanStatus(id: string, status: 'active' | 'pau
     .from('budget_plans')
     .update({ status, updated_at: new Date().toISOString() })
     .eq('id', id);
-  
+
   if (error) throw error;
 }
 
@@ -1424,16 +1430,16 @@ export async function restartBudgetPlan(
     .select('*')
     .eq('id', id)
     .single();
-  
+
   if (fetchError) throw fetchError;
-  
+
   const budgetPlan = plan as BudgetPlanRow;
 
   const newStartDate = options.newStartDate || new Date().toISOString().split('T')[0];
   const newHardLimit = options.newHardLimit ?? budgetPlan.hard_limit;
   const newEndDate = calculatePlanEndDate(newStartDate, budgetPlan.period);
   const newRoundNumber = (budgetPlan.round_number || 1) + 1;
-  
+
   // 更新计划
   const { error: updateError } = await supabase
     .from('budget_plans')
@@ -1446,9 +1452,9 @@ export async function restartBudgetPlan(
       updated_at: new Date().toISOString(),
     })
     .eq('id', id);
-  
+
   if (updateError) throw updateError;
-  
+
   // 创建新的 12 个周期记录
   const periodRecords = [];
   for (let i = 1; i <= 12; i++) {
@@ -1464,11 +1470,11 @@ export async function restartBudgetPlan(
       indicator_status: 'pending' as const,
     });
   }
-  
+
   const { error: recordsError } = await supabase
     .from('budget_period_records')
     .insert(periodRecords);
-  
+
   if (recordsError) throw recordsError;
 }
 
@@ -1480,7 +1486,7 @@ export async function deleteBudgetPlan(id: string): Promise<void> {
     .from('budget_plans')
     .delete()
     .eq('id', id);
-  
+
   if (error) throw error;
 }
 
@@ -1494,7 +1500,7 @@ export async function getCurrencyRates(): Promise<CurrencyRateRow[]> {
     .from('currency_rates')
     .select('*')
     .order('from_currency', { ascending: true });
-  
+
   if (error) throw error;
   return (data || []) as CurrencyRateRow[];
 }
@@ -1504,17 +1510,17 @@ export async function getCurrencyRates(): Promise<CurrencyRateRow[]> {
  */
 export async function getCurrencyRate(from: string, to: string): Promise<number> {
   if (from === to) return 1;
-  
+
   const { data, error } = await supabase
     .from('currency_rates')
     .select('rate')
     .eq('from_currency', from)
     .eq('to_currency', to)
     .maybeSingle();
-  
+
   if (error) throw error;
   if (!data) return 1; // 如果没有汇率，返回 1
-  
+
   return data.rate;
 }
 
@@ -1530,7 +1536,7 @@ export async function updateCurrencyRate(from: string, to: string, rate: number)
       rate,
       updated_at: new Date().toISOString(),
     });
-  
+
   if (error) throw error;
 }
 
@@ -1558,7 +1564,7 @@ export async function calculateCategorySpending(
     .gte('date', startDate)
     .lte('date', endDate)
     .lt('amount', 0); // 只计算支出（负数）
-  
+
   // 账户筛选
   if (accountFilterMode === 'include' && accountFilterIds && accountFilterIds.length > 0) {
     query = query.in('account_id', accountFilterIds);
@@ -1573,10 +1579,10 @@ export async function calculateCategorySpending(
       query = query.in('account_id', includedIds);
     }
   }
-  
+
   const { data, error } = await query;
   if (error) throw error;
-  
+
   // 汇总金额（需要汇率转换）
   let total = 0;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1585,7 +1591,7 @@ export async function calculateCategorySpending(
     const rate = await getCurrencyRate(txCurrency, targetCurrency);
     total += Math.abs(tx.amount) * rate;
   }
-  
+
   return total;
 }
 
@@ -1610,12 +1616,12 @@ export async function calculateTotalSpending(
     .gte('date', startDate)
     .lte('date', endDate)
     .lt('amount', 0);
-  
+
   // 标签筛选
   if (includedCategories && includedCategories.length > 0) {
     query = query.in('category', includedCategories);
   }
-  
+
   // 账户筛选
   if (accountFilterMode === 'include' && accountFilterIds && accountFilterIds.length > 0) {
     query = query.in('account_id', accountFilterIds);
@@ -1628,10 +1634,10 @@ export async function calculateTotalSpending(
       query = query.in('account_id', includedIds);
     }
   }
-  
+
   const { data, error } = await query;
   if (error) throw error;
-  
+
   let total = 0;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const tx of (data || []) as any[]) {
@@ -1639,7 +1645,7 @@ export async function calculateTotalSpending(
     const rate = await getCurrencyRate(txCurrency, targetCurrency);
     total += Math.abs(tx.amount) * rate;
   }
-  
+
   return total;
 }
 
@@ -1658,18 +1664,18 @@ export async function calculateSoftLimit(
   // 计算前3个周期的时间范围
   const periodRanges: Array<{ start: string; end: string }> = [];
   const currentStart = new Date(currentPeriodStart);
-  
+
   if (plan.period === 'monthly') {
     // 月度：往前推3个自然月
     for (let i = 1; i <= 3; i++) {
       const monthStart = new Date(currentStart);
       monthStart.setMonth(monthStart.getMonth() - i);
       monthStart.setDate(1);
-      
+
       const monthEnd = new Date(monthStart);
       monthEnd.setMonth(monthEnd.getMonth() + 1);
       monthEnd.setDate(0); // 上月最后一天
-      
+
       periodRanges.push({
         start: monthStart.toISOString().split('T')[0],
         end: monthEnd.toISOString().split('T')[0],
@@ -1680,20 +1686,20 @@ export async function calculateSoftLimit(
     for (let i = 1; i <= 3; i++) {
       const weekStart = new Date(currentStart);
       weekStart.setDate(weekStart.getDate() - i * 7);
-      
+
       const weekEnd = new Date(weekStart);
       weekEnd.setDate(weekEnd.getDate() + 6);
-      
+
       periodRanges.push({
         start: weekStart.toISOString().split('T')[0],
         end: weekEnd.toISOString().split('T')[0],
       });
     }
   }
-  
+
   // 计算每个周期的实际消费
   const amounts: number[] = [];
-  
+
   for (const range of periodRanges) {
     let amount: number;
     if (plan.plan_type === 'total') {
@@ -1717,7 +1723,7 @@ export async function calculateSoftLimit(
     }
     amounts.push(amount);
   }
-  
+
   // 计算平均值
   const sum = amounts.reduce((acc, a) => acc + a, 0);
   return sum / 3;
@@ -1735,12 +1741,12 @@ export function determineIndicatorStatus(
   if (actualAmount > hardLimit) {
     return 'red'; // 超过刚性约束 = 红灯
   }
-  
+
   // 刚性达标的情况下，看柔性
   if (softLimit !== null && actualAmount <= softLimit) {
     return 'star'; // 同时低于柔性 = 星星
   }
-  
+
   return 'green'; // 刚性达标但超过柔性 = 绿灯
 }
 
@@ -1754,13 +1760,13 @@ export async function updateBudgetPeriodRecord(recordId: string): Promise<void> 
     .select('*, budget_plans (*)')
     .eq('id', recordId)
     .single();
-  
+
   if (recordError) throw recordError;
-  
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const budgetRecord = record as any;
   const plan = budgetRecord.budget_plans as BudgetPlanRow;
-  
+
   // 计算实际消费
   let actualAmount: number;
   if (plan.plan_type === 'total') {
@@ -1782,16 +1788,16 @@ export async function updateBudgetPeriodRecord(recordId: string): Promise<void> 
       plan.account_filter_ids
     );
   }
-  
+
   // 计算柔性约束（基于自然时间的前3个周期）
   let softLimit: number | null = null;
   if (plan.soft_limit_enabled) {
     softLimit = await calculateSoftLimit(plan, budgetRecord.period_start, budgetRecord.period_end);
   }
-  
+
   // 判断状态
   const indicatorStatus = determineIndicatorStatus(actualAmount, budgetRecord.hard_limit, softLimit);
-  
+
   // 更新记录
   const { error: updateError } = await supabase
     .from('budget_period_records')
@@ -1801,7 +1807,7 @@ export async function updateBudgetPeriodRecord(recordId: string): Promise<void> 
       indicator_status: indicatorStatus,
     })
     .eq('id', recordId);
-  
+
   if (updateError) throw updateError;
 }
 
@@ -1810,16 +1816,16 @@ export async function updateBudgetPeriodRecord(recordId: string): Promise<void> 
  */
 export async function updateAllActiveBudgetPeriods(): Promise<void> {
   const today = new Date().toISOString().split('T')[0];
-  
+
   // 获取所有活跃计划的当前周期记录
   const { data: records, error } = await supabase
     .from('budget_period_records')
     .select('id, plan_id, period_start, period_end')
     .lte('period_start', today)
     .gte('period_end', today);
-  
+
   if (error) throw error;
-  
+
   for (const record of (records || [])) {
     await updateBudgetPeriodRecord(record.id);
   }
@@ -1830,13 +1836,13 @@ export async function updateAllActiveBudgetPeriods(): Promise<void> {
  */
 export async function checkExpiredBudgetPlans(): Promise<void> {
   const today = new Date().toISOString().split('T')[0];
-  
+
   const { error } = await supabase
     .from('budget_plans')
     .update({ status: 'expired' })
     .eq('status', 'active')
     .lt('end_date', today);
-  
+
   if (error) throw error;
 }
 
@@ -1851,7 +1857,7 @@ export async function getDashboardBudgetData(): Promise<{
   }>;
 }> {
   const today = new Date().toISOString().split('T')[0];
-  
+
   // 获取所有活跃计划
   const { data: plans, error } = await supabase
     .from('budget_plans')
@@ -1862,26 +1868,338 @@ export async function getDashboardBudgetData(): Promise<{
     .eq('status', 'active')
     .order('plan_type', { ascending: false }) // total 排在前面
     .order('created_at', { ascending: true });
-  
+
   if (error) throw error;
-  
+
   const result = [];
-  
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const plan of (plans || []) as any[]) {
     const records = (plan.records || []) as BudgetPeriodRecordRow[];
-    
+
     // 找到当前周期
     const currentPeriod = records.find(
       r => r.period_start <= today && r.period_end >= today
     ) || null;
-    
+
     result.push({
       plan: plan as BudgetPlanRow,
       currentPeriod,
       allRecords: records.sort((a, b) => a.period_index - b.period_index),
     });
   }
-  
+
   return { plans: result };
+}
+
+// --- Data Import/Export ---
+
+import { parseXLSFile } from './importers/xlsParser';
+import { parseNaturalLanguageText } from './importers/nlParser';
+import { validateTransactions } from './importers/validator';
+import { detectDuplicates } from './importers/duplicateDetector';
+import { generateImportReport } from './importers/reportGenerator';
+import { ImportResult } from './importers/types';
+import { formatTransactionsForExport, formatSnapshotsForExport, exportToFile, ExportParams } from './exporters';
+
+/**
+ * 从 XLS 文件导入交易
+ */
+export async function importTransactionsFromXLS(file: File): Promise<ImportResult> {
+  try {
+    // Phase 1: 解析文件
+    const parsed = await parseXLSFile(file);
+
+    if (parsed.length === 0) {
+      return {
+        success: false,
+        errors: [{
+          line: 0,
+          field: '文件',
+          value: file.name,
+          reason: '文件中没有找到有效的交易记录'
+        }]
+      };
+    }
+
+    // Phase 2: 获取账户和标签
+    const accounts = await getAccountsWithBalance();
+    const existingTags = await listTags();
+
+    // Phase 3: 预验证（不写入数据库）
+    const validation = await validateTransactions(parsed, accounts);
+
+    if (validation.errors.length > 0) {
+      // 有错误，立即返回，不导入任何数据
+      return {
+        success: false,
+        errors: validation.errors,
+        imported: 0
+      };
+    }
+
+    // Phase 4: 检测重复
+    const duplicates = await detectDuplicates(
+      validation.valid,
+      async (startDate: string, endDate: string) => {
+        const transactions = await getTransactions({
+          filters: { startDate, endDate },
+          page: 0
+        });
+        return transactions || [];
+      }
+    );
+
+    // Phase 5: 收集需要创建的新标签
+    const existingTagNames = new Set(existingTags.map(t => t.name));
+    // 使用 Map 来去重（以 name 为键）
+    const newTagsToCreate = new Map<string, 'expense' | 'income' | 'transfer'>();
+
+    for (const tx of validation.valid) {
+      if (tx.category && !existingTagNames.has(tx.category)) {
+        const kind = tx.type === 'transfer' ? 'transfer' : tx.type;
+        // 如果已经在 Map 中，保留第一次出现的类型
+        if (!newTagsToCreate.has(tx.category)) {
+          newTagsToCreate.set(tx.category, kind);
+        }
+      }
+    }
+
+    // Phase 6: 批量导入（使用事务性）
+    try {
+      // 6.1 创建新标签（创建前再次检查，避免并发问题）
+      const createdTags: string[] = [];
+      for (const [tagName, tagKind] of newTagsToCreate.entries()) {
+        try {
+          // 先检查标签是否已存在（可能在收集阶段后被其他进程创建）
+          const currentTags = await listTags();
+          const exists = currentTags.some(t => t.name === tagName && t.kind === tagKind);
+
+          if (!exists) {
+            await createTag({ name: tagName, kind: tagKind });
+            createdTags.push(tagName);
+          }
+        } catch (error: any) {
+          // 如果是唯一约束错误，说明标签已存在，忽略
+          if (!error.message?.includes('duplicate key') && !error.message?.includes('unique constraint')) {
+            throw error;
+          }
+        }
+      }
+
+      // 6.2 批量导入交易
+      for (const tx of validation.valid) {
+        await createTransaction({
+          account_id: tx.accountId!,
+          type: tx.type,
+          amount: tx.amount,
+          category: tx.category,
+          date: tx.date,
+          description: tx.description,
+          to_account_id: tx.toAccountId,
+          to_amount: tx.toAmount
+        });
+      }
+
+      // Phase 7: 生成报告
+      const report = generateImportReport(validation.valid, duplicates, createdTags);
+
+      return {
+        success: true,
+        imported: validation.valid.length,
+        report
+      };
+
+    } catch (error: any) {
+      // 导入失败
+      throw new Error(`导入失败: ${error.message}`);
+    }
+
+  } catch (error: any) {
+    return {
+      success: false,
+      errors: [{
+        line: 0,
+        field: '系统',
+        value: '',
+        reason: error.message || '未知错误'
+      }]
+    };
+  }
+}
+
+/**
+ * 从自然语言文本导入交易
+ */
+export async function importTransactionsFromText(text: string): Promise<ImportResult> {
+  try {
+    // Phase 1: 解析文本
+    const parsed = parseNaturalLanguageText(text);
+
+    if (parsed.length === 0) {
+      return {
+        success: false,
+        errors: [{
+          line: 0,
+          field: '文本',
+          value: text,
+          reason: '文本中没有找到有效的交易记录'
+        }]
+      };
+    }
+
+    // Phase 2: 获取账户和标签
+    const accounts = await getAccountsWithBalance();
+    const existingTags = await listTags();
+
+    // Phase 3: 预验证
+    const validation = await validateTransactions(parsed, accounts);
+
+    if (validation.errors.length > 0) {
+      return {
+        success: false,
+        errors: validation.errors,
+        imported: 0
+      };
+    }
+
+    // Phase 4: 检测重复
+    const duplicates = await detectDuplicates(
+      validation.valid,
+      async (startDate: string, endDate: string) => {
+        const transactions = await getTransactions({
+          filters: { startDate, endDate },
+          page: 0
+        });
+        return transactions || [];
+      }
+    );
+
+    // Phase 5: 收集新标签
+    const existingTagNames = new Set(existingTags.map(t => t.name));
+    // 使用 Map 来去重（以 name 为键）
+    const newTagsToCreate = new Map<string, 'expense' | 'income' | 'transfer'>();
+
+    for (const tx of validation.valid) {
+      if (tx.category && !existingTagNames.has(tx.category)) {
+        const kind = tx.type === 'transfer' ? 'transfer' : tx.type;
+        if (!newTagsToCreate.has(tx.category)) {
+          newTagsToCreate.set(tx.category, kind);
+        }
+      }
+    }
+
+    // Phase 6: 批量导入
+    try {
+      const createdTags: string[] = [];
+      for (const [tagName, tagKind] of newTagsToCreate.entries()) {
+        try {
+          const currentTags = await listTags();
+          const exists = currentTags.some(t => t.name === tagName && t.kind === tagKind);
+
+          if (!exists) {
+            await createTag({ name: tagName, kind: tagKind });
+            createdTags.push(tagName);
+          }
+        } catch (error: any) {
+          if (!error.message?.includes('duplicate key') && !error.message?.includes('unique constraint')) {
+            throw error;
+          }
+        }
+      }
+
+      for (const tx of validation.valid) {
+        await createTransaction({
+          account_id: tx.accountId!,
+          type: tx.type,
+          amount: tx.amount,
+          category: tx.category,
+          date: tx.date,
+          description: tx.description,
+          to_account_id: tx.toAccountId,
+          to_amount: tx.toAmount
+        });
+      }
+
+      // Phase 7: 生成报告
+      const report = generateImportReport(validation.valid, duplicates, createdTags);
+
+      return {
+        success: true,
+        imported: validation.valid.length,
+        report
+      };
+
+    } catch (error: any) {
+      throw new Error(`导入失败: ${error.message}`);
+    }
+
+  } catch (error: any) {
+    return {
+      success: false,
+      errors: [{
+        line: 0,
+        field: '系统',
+        value: '',
+        reason: error.message || '未知错误'
+      }]
+    };
+  }
+}
+
+/**
+ * 导出数据
+ */
+export async function exportData(params: ExportParams): Promise<Blob> {
+  const { dataType, accountIds, startDate, endDate, format } = params;
+
+  if (dataType === 'transactions') {
+    // 导出流水
+    const transactions = await getTransactions({
+      filters: {
+        accountId: accountIds,
+        startDate,
+        endDate
+      },
+      page: 0
+    });
+
+    const formatted = formatTransactionsForExport(transactions || []);
+    return exportToFile(formatted, format, `transactions_${new Date().toISOString().split('T')[0]}.${format}`);
+
+  } else {
+    // 导出快照
+    let query = supabase
+      .from('snapshots')
+      .select(`
+        *,
+        accounts (name, currency)
+      `)
+      .order('date', { ascending: false });
+
+    if (accountIds && accountIds.length > 0) {
+      query = query.in('account_id', accountIds);
+    }
+
+    if (startDate) {
+      query = query.gte('date', startDate);
+    }
+
+    if (endDate) {
+      query = query.lte('date', endDate);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshotsWithAccounts = (data || []).map((snap: any) => ({
+      ...snap,
+      account_name: snap.accounts?.name || '',
+      currency: snap.accounts?.currency || ''
+    }));
+
+    const formatted = formatSnapshotsForExport(snapshotsWithAccounts);
+    return exportToFile(formatted, format, `snapshots_${new Date().toISOString().split('T')[0]}.${format}`);
+  }
 }

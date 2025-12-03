@@ -18,8 +18,11 @@ import {
   getExportData,
   getCurrencyRates,
   updateCurrencyRate,
+  getAccountsWithBalance,
   BookkeepingKind,
 } from "@/lib/bookkeeping/actions";
+import ImportSection from "./components/ImportSection";
+import ExportSection from "./components/ExportSection";
 import { CurrencyRateRow } from "@/types/database";
 import { Database } from "@/types/database";
 import { Camera, Download, Upload, FileSpreadsheet, FileText, RefreshCw, DollarSign } from "lucide-react";
@@ -58,7 +61,7 @@ const DECIMAL_OPTIONS = [
 
 // CSV 表头定义
 const TRANSACTION_CSV_HEADERS = [
-  "id", "date", "type", "amount", "category", "description", 
+  "id", "date", "type", "amount", "category", "description",
   "account_name", "account_currency", "transfer_group_id", "created_at"
 ];
 const SNAPSHOT_CSV_HEADERS = [
@@ -67,7 +70,7 @@ const SNAPSHOT_CSV_HEADERS = [
 
 export default function SettingsPage() {
   const [loading, setLoading] = React.useState(true);
-  
+
   // Settings State
   const [settings, setSettings] = React.useState<BookkeepingSettingsRow | null>(null);
   const [savingColor, setSavingColor] = React.useState(false);
@@ -106,13 +109,17 @@ export default function SettingsPage() {
   const [currencyRates, setCurrencyRates] = React.useState<CurrencyRateRow[]>([]);
   const [savingRate, setSavingRate] = React.useState<string | null>(null);
 
+  // Accounts State (for ExportSection)
+  const [accounts, setAccounts] = React.useState<any[]>([]);
+
   const fetchData = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [settingsData, tagRows, ratesData] = await Promise.all([
-        getBookkeepingSettings(), 
+      const [settingsData, tagRows, ratesData, accountsData] = await Promise.all([
+        getBookkeepingSettings(),
         listTags(),
         getCurrencyRates(),
+        getAccountsWithBalance(),
       ]);
       setSettings(settingsData);
       setTempColors({
@@ -129,6 +136,7 @@ export default function SettingsPage() {
       });
       setTags(tagRows);
       setCurrencyRates(ratesData);
+      setAccounts(accountsData);
     } catch (error) {
       console.error(error);
       alert("加载设置数据失败，请稍后重试");
@@ -259,18 +267,18 @@ export default function SettingsPage() {
         // 导出 CSV
         const transactionsCsv = convertToCSV(data.transactions, TRANSACTION_CSV_HEADERS);
         const snapshotsCsv = convertToCSV(data.snapshots, SNAPSHOT_CSV_HEADERS);
-        
+
         downloadFile(transactionsCsv, `transactions_${exportStartDate}_${exportEndDate}.csv`, "text/csv");
         downloadFile(snapshotsCsv, `snapshots_${exportStartDate}_${exportEndDate}.csv`, "text/csv");
       } else {
         // 导出 XLS (实际是 TSV，Excel 可以打开)
         const transactionsXls = convertToTSV(data.transactions, TRANSACTION_CSV_HEADERS);
         const snapshotsXls = convertToTSV(data.snapshots, SNAPSHOT_CSV_HEADERS);
-        
+
         downloadFile(transactionsXls, `transactions_${exportStartDate}_${exportEndDate}.xls`, "application/vnd.ms-excel");
         downloadFile(snapshotsXls, `snapshots_${exportStartDate}_${exportEndDate}.xls`, "application/vnd.ms-excel");
       }
-      
+
       alert("导出成功！");
     } catch (error) {
       console.error(error);
@@ -316,7 +324,7 @@ export default function SettingsPage() {
       <div className="flex items-center justify-between">
         <div className="space-y-1">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest">Settings</p>
-        <h1 className="text-2xl font-bold tracking-tight">记账设置中心</h1>
+          <h1 className="text-2xl font-bold tracking-tight">记账设置中心</h1>
           <p className="text-sm text-gray-500">配置全局显示规则、颜色主题、快照策略与数据管理。</p>
         </div>
       </div>
@@ -409,6 +417,9 @@ export default function SettingsPage() {
               自动快照会在每日打卡时检查，如果距离上次快照超过设定间隔，则自动为所有账户创建快照。
             </p>
           </div>
+          <Button onClick={handleSettingsSave} disabled={savingSettings || loading}>
+            {savingSettings ? "保存中..." : "保存设置"}
+          </Button>
         </div>
 
         <div className="grid gap-6 md:grid-cols-2">
@@ -470,7 +481,7 @@ export default function SettingsPage() {
           <Label className="text-sm font-medium">查账容差阈值</Label>
           <p className="text-xs text-gray-500">
             当流水与快照的差额小于此值时，不会触发查账提醒。用于忽略微小的精度误差。
-        </p>
+          </p>
           <div className="flex items-center gap-3">
             <Input
               type="number"
@@ -506,8 +517,8 @@ export default function SettingsPage() {
             <p className="font-medium text-gray-900">立即创建快照</p>
             <p className="text-sm text-gray-500">为所有账户创建一个手动快照，记录当前余额。</p>
           </div>
-          <Button 
-            onClick={handleManualSnapshot} 
+          <Button
+            onClick={handleManualSnapshot}
             disabled={creatingSnapshot}
             variant="outline"
             className="gap-2"
@@ -609,119 +620,15 @@ export default function SettingsPage() {
             <p className="text-sm font-semibold text-purple-600 uppercase tracking-wider">Data Management</p>
             <h2 className="text-xl font-bold text-gray-900 mt-1">数据导入导出</h2>
             <p className="text-sm text-gray-500 mt-1">
-              导出选定时间范围内的流水和快照数据，或导入外部数据。
+              导入外部账单数据或导出您的流水和快照数据。
             </p>
           </div>
         </div>
 
-        {/* Export Section */}
-        <div className="space-y-4">
-          <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-            <Download size={18} />
-            数据导出
-          </h3>
-          
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label>开始日期</Label>
-              <Input
-                type="date"
-                value={exportStartDate}
-                onChange={(e) => setExportStartDate(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>结束日期</Label>
-              <Input
-                type="date"
-                value={exportEndDate}
-                onChange={(e) => setExportEndDate(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="flex gap-3">
-            <Button 
-              onClick={() => handleExport("csv")} 
-              disabled={exporting}
-              variant="outline"
-              className="gap-2"
-            >
-              <FileText size={16} />
-              导出 CSV
-            </Button>
-            <Button 
-              onClick={() => handleExport("xlsx")} 
-              disabled={exporting}
-              variant="outline"
-              className="gap-2"
-            >
-              <FileSpreadsheet size={16} />
-              导出 XLS
-            </Button>
-            <Button
-              variant="ghost"
-              onClick={() => setShowExportPreview(!showExportPreview)}
-              className="text-gray-500"
-            >
-              {showExportPreview ? "隐藏格式预览" : "查看格式预览"}
-            </Button>
-          </div>
-
-          {/* Export Format Preview */}
-          {showExportPreview && (
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-xl bg-gray-50 p-4 border border-gray-100">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">流水数据表头</p>
-                <div className="flex flex-wrap gap-1">
-                  {TRANSACTION_CSV_HEADERS.map(header => (
-                    <span key={header} className="px-2 py-1 bg-white rounded text-xs font-mono text-gray-700 border border-gray-200">
-                      {header}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <div className="rounded-xl bg-gray-50 p-4 border border-gray-100">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">快照数据表头</p>
-                <div className="flex flex-wrap gap-1">
-                  {SNAPSHOT_CSV_HEADERS.map(header => (
-                    <span key={header} className="px-2 py-1 bg-white rounded text-xs font-mono text-gray-700 border border-gray-200">
-                      {header}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Import Section */}
-        <div className="space-y-4 pt-4 border-t border-gray-100">
-          <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-            <Upload size={18} />
-            数据导入
-          </h3>
-          
-          <div className="rounded-xl bg-gray-50 p-6 border-2 border-dashed border-gray-200 text-center">
-            <Upload className="mx-auto text-gray-400 mb-3" size={32} />
-            <p className="text-sm text-gray-600 mb-2">拖拽文件到此处，或点击选择文件</p>
-            <p className="text-xs text-gray-400 mb-4">支持 CSV、XLS 格式</p>
-            <input
-              type="file"
-              accept=".csv,.xls,.xlsx"
-              className="hidden"
-              id="import-file"
-              onChange={() => alert("导入功能开发中...")}
-            />
-            <label htmlFor="import-file">
-              <Button variant="outline" className="cursor-pointer" asChild>
-                <span>选择文件</span>
-              </Button>
-            </label>
-          </div>
-          <p className="text-xs text-gray-400">
-            注意：导入功能正在开发中，目前仅支持导出。
-          </p>
+        {/* 导入导出组件 */}
+        <div className="grid gap-6 md:grid-cols-2">
+          <ImportSection />
+          <ExportSection accounts={accounts} />
         </div>
       </section>
 
@@ -835,21 +742,21 @@ export default function SettingsPage() {
             />
           </div>
           <div className="space-y-2 md:col-span-2">
-             <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                    <input
-                        id="tag-status"
-                        type="checkbox"
-                        className="h-4 w-4 rounded border-gray-300"
-                        checked={tagForm.is_active}
-                        onChange={(e) => setTagForm((prev) => ({ ...prev, is_active: e.target.checked }))}
-                    />
-                    <Label htmlFor="tag-status" className="cursor-pointer">默认启用</Label>
-                </div>
-                <Button type="submit" disabled={creatingTag} className="min-w-[140px]">
-                    {creatingTag ? "保存中..." : "新增标签"}
-                </Button>
-             </div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <input
+                  id="tag-status"
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-gray-300"
+                  checked={tagForm.is_active}
+                  onChange={(e) => setTagForm((prev) => ({ ...prev, is_active: e.target.checked }))}
+                />
+                <Label htmlFor="tag-status" className="cursor-pointer">默认启用</Label>
+              </div>
+              <Button type="submit" disabled={creatingTag} className="min-w-[140px]">
+                {creatingTag ? "保存中..." : "新增标签"}
+              </Button>
+            </div>
           </div>
         </form>
 
@@ -880,9 +787,8 @@ export default function SettingsPage() {
                     </div>
                     <div className="flex items-center gap-2 text-xs">
                       <span
-                        className={`rounded-full px-2 py-0.5 ${
-                          tag.is_active ? "bg-emerald-100 text-emerald-700" : "bg-gray-200 text-gray-600"
-                        }`}
+                        className={`rounded-full px-2 py-0.5 ${tag.is_active ? "bg-emerald-100 text-emerald-700" : "bg-gray-200 text-gray-600"
+                          }`}
                       >
                         {tag.is_active ? "已启用" : "已停用"}
                       </span>
@@ -925,7 +831,7 @@ export default function SettingsPage() {
 // 辅助函数：转换为 CSV
 function convertToCSV(data: Record<string, unknown>[], headers: string[]): string {
   const headerRow = headers.join(",");
-  const rows = data.map(item => 
+  const rows = data.map(item =>
     headers.map(h => {
       const value = item[h];
       if (value === null || value === undefined) return "";
@@ -941,7 +847,7 @@ function convertToCSV(data: Record<string, unknown>[], headers: string[]): strin
 // 辅助函数：转换为 TSV (Excel 兼容)
 function convertToTSV(data: Record<string, unknown>[], headers: string[]): string {
   const headerRow = headers.join("\t");
-  const rows = data.map(item => 
+  const rows = data.map(item =>
     headers.map(h => {
       const value = item[h];
       if (value === null || value === undefined) return "";
