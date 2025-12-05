@@ -2,6 +2,7 @@
 
 import { Sidebar } from "@/components/Sidebar";
 import { LayoutDashboard, List, Wallet, Settings, ShieldAlert, CalendarClock, Target } from "lucide-react";
+import { BookkeepingCacheProvider } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 
 const bookkeepingNavItems = [
   { icon: LayoutDashboard, href: "/bookkeeping/dashboard", label: "仪表盘" },
@@ -19,12 +20,14 @@ export default function BookkeepingLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex h-[calc(100vh-3.5rem)]">
-      <Sidebar items={bookkeepingNavItems} />
-      {/* 统一的内容区域：固定 padding，可滚动 */}
-      <div className="flex-1 overflow-y-auto p-6">
-        {children}
+    <BookkeepingCacheProvider>
+      <div className="flex h-[calc(100vh-3.5rem)]">
+        <Sidebar items={bookkeepingNavItems} />
+        {/* 统一的内容区域：固定 padding，可滚动 */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {children}
+        </div>
       </div>
-    </div>
+    </BookkeepingCacheProvider>
   );
 }

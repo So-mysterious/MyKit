@@ -1,5 +1,33 @@
 # 开发日志 (Development Log)
 
+## 2025-12-03
+- **流水页面编辑和删除功能**:
+    - **后端函数** (`lib/bookkeeping/actions.ts`):
+        - `deleteTransaction(id)`: 删除交易,自动处理划转组(删除两条关联记录)。
+    - **TransactionModal 扩展**:
+        - 新增 `editMode` 和 `initialData` props 支持编辑模式。
+        - 编辑模式下**隐藏类型切换器**,但允许修改所有其他字段(金额、账户、分类、备注、日期)。
+        - 编辑采用"删除+重建"策略,确保数据一致性。
+        - 自动打开对话框当 `editMode` 为 true。
+        - **Bug 修复**: 修复了点击对话框外部关闭后滚动页面会导致对话框重新打开的问题。通过在 `handleOpenChange` 中检测对话框关闭时调用 `onClose()` 清除 `editingTransaction` 状态。
+    - **TransactionItem 组件**:
+        - 添加 `onEdit` 和 `onDelete` 回调 props。
+        - 添加悬停激活的编辑(铅笔)和删除(红色垃圾桶)按钮。
+        - 删除操作显示加载指示器。
+        - 调整 grid 布局: 金额栏从 `200px` 缩小至 `160px`, 新增 `80px` 操作列。
+    - **TransactionsPage 集成**:
+        - 实现 `handleEdit` 和 `handleDelete` 处理器。
+        - 删除前显示确认弹窗。
+        - 编辑/删除操作成功后自动刷新流水列表。
+        - 修复表头 grid 列定义以匹配新布局。
+    - **用户体验**:
+        - ✅ 悬停行时显示操作按钮 (opacity-0 → opacity-100)
+        - ✅ 编辑允许修改所有字段(类型除外)
+        - ✅ 删除划转时自动删除两条关联记录
+        - ✅ 所有操作提供即时视觉反馈
+
+---
+
 ## 2025-12-02
 - **数据导入导出功能完整实现**：
     - **后端模块** (`lib/bookkeeping/importers/` & `lib/bookkeeping/exporters.ts`):

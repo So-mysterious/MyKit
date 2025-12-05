@@ -14,7 +14,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { createTransaction, getAvailableTags, BookkeepingKind } from "@/lib/bookkeeping/actions";
+import { createTransaction, deleteTransaction, BookkeepingKind } from "@/lib/bookkeeping/actions";
+import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 
 export interface TransactionModalSuccessPayload {
   accountId: string;
@@ -27,32 +28,82 @@ interface TransactionModalProps {
   onSuccess?: (payload: TransactionModalSuccessPayload) => void;
   trigger?: React.ReactNode;
   defaultAccountId?: string;
+  // Edit mode props
+  editMode?: boolean;
+  initialData?: {
+    id: string;
+    type: 'income' | 'expense' | 'transfer';
+    amount: number;
+    category: string;
+    description: string | null;
+    date: string;
+    account_id: string;
+    to_account_id?: string;
+    to_amount?: number;
+  };
+  onClose?: () => void;
 }
 
-export function TransactionModal({ accounts = [], onSuccess, trigger, defaultAccountId }: TransactionModalProps) {
+export function TransactionModal({
+  accounts = [],
+  onSuccess,
+  trigger,
+  defaultAccountId,
+  editMode = false,
+  initialData,
+  onClose,
+}: TransactionModalProps) {
+  const cache = useBookkeepingCache(); // ✅ 使用缓存
   const [open, setOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [type, setType] = React.useState<"expense" | "income" | "transfer">("expense");
-  
+
   // Dynamic tags
   const [availableTags, setAvailableTags] = React.useState<{ kind: string, name: string }[]>([]);
-  
+
   // Form States
   const [amount, setAmount] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [category, setCategory] = React.useState("");
   const [accountId, setAccountId] = React.useState(defaultAccountId || "");
   const [date, setDate] = React.useState(new Date().toISOString().split('T')[0]);
-  
+
   // Transfer Specific States
   const [toAccountId, setToAccountId] = React.useState("");
-  const [toAmount, setToAmount] = React.useState(""); 
+  const [toAmount, setToAmount] = React.useState("");
+
+  // Auto-open in edit mode
+  React.useEffect(() => {
+    if (editMode && initialData) {
+      setOpen(true);
+    }
+  }, [editMode, initialData]);
 
   React.useEffect(() => {
     if (open) {
-      getAvailableTags().then(setAvailableTags).catch(console.error);
+      cache.getTags().then(setAvailableTags).catch(console.error); // ✅ 从缓存获取
+
+      // Initialize form with edit data if in edit mode
+      if (editMode && initialData) {
+        setType(initialData.type);
+        setAmount(Math.abs(initialData.amount).toString());
+        setCategory(initialData.category);
+        setDescription(initialData.description || "");
+        setDate(initialData.date.split('T')[0]);
+        setAccountId(initialData.account_id);
+        if (initialData.type === 'transfer') {
+          setToAccountId(initialData.to_account_id || "");
+          setToAmount(initialData.to_amount ? Math.abs(initialData.to_amount).toString() : "");
+        }
+      } else {
+        // Reset for create mode
+        setAmount("");
+        setDescription("");
+        setDate(new Date().toISOString().split('T')[0]);
+        setToAmount("");
+      }
     }
-  }, [open]);
+  }, [open, editMode, initialData, cache.getTags]); // ✅ 添加cache.getTags依赖
 
   // ... (Same initialization effects) ...
   React.useEffect(() => {
@@ -85,100 +136,112 @@ export function TransactionModal({ accounts = [], onSuccess, trigger, defaultAcc
   // Reset toAccount if it conflicts with current account
   React.useEffect(() => {
     if (type === 'transfer' && toAccountId === accountId) {
-        // Find a new target that isn't current
-        const fallback = accounts.find(a => a.id !== accountId);
-        if (fallback) {
-            setToAccountId(fallback.id);
-        } else {
-            setToAccountId("");
-        }
+      // Find a new target that isn't current
+      const fallback = accounts.find(a => a.id !== accountId);
+      if (fallback) {
+        setToAccountId(fallback.id);
+      } else {
+        setToAccountId("");
+      }
     }
   }, [type, accountId, toAccountId, accounts]);
-  
+
   const currentCategories = React.useMemo(() => {
     // Filter tags by type
     const filtered = availableTags
-        .filter(t => t.kind === type)
-        .map(t => t.name);
-    
+      .filter(t => t.kind === type)
+      .map(t => t.name);
+
     if (filtered.length === 0) return ['默认'];
     return filtered;
   }, [type, availableTags]);
 
   React.useEffect(() => {
     if (currentCategories.length > 0 && !currentCategories.includes(category)) {
-    setCategory(currentCategories[0]);
+      setCategory(currentCategories[0]);
     }
   }, [currentCategories, category]);
 
-  React.useEffect(() => {
-    if (open) {
-      setAmount("");
-      setDescription("");
-      setDate(new Date().toISOString().split('T')[0]);
-      setToAmount("");
-    }
-  }, [open]);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
     if (!accountId) {
-        alert("请先创建账户！");
-        return;
+      alert("请先创建账户！");
+      return;
     }
-    
+
     setSubmitting(true);
     try {
-        const absAmount = Math.abs(parseFloat(amount));
-        let finalAmount = absAmount;
-        if (type === 'expense') {
-            finalAmount = -absAmount;
-        } else if (type === 'transfer') {
-            finalAmount = -absAmount; 
-        }
+      // Edit mode: delete old transaction and create new one
+      if (editMode && initialData) {
+        await deleteTransaction(initialData.id);
+      }
 
-        const todayStr = new Date().toISOString().split('T')[0];
-        let finalDateStr: string;
-        
-        if (date === todayStr) {
-            finalDateStr = new Date().toISOString();
-        } else {
-            finalDateStr = new Date(date + 'T12:00:00.000Z').toISOString(); 
-        }
-        
-        if (date === todayStr) {
-            finalDateStr = new Date().toISOString();
-        }
+      const absAmount = Math.abs(parseFloat(amount));
+      let finalAmount = absAmount;
+      if (type === 'expense') {
+        finalAmount = -absAmount;
+      } else if (type === 'transfer') {
+        finalAmount = -absAmount;
+      }
 
-        await createTransaction({
-            account_id: accountId,
-            type,
-            amount: finalAmount,
-            category: category || '默认',
-            date: finalDateStr,
-            description,
-            to_account_id: type === 'transfer' ? toAccountId : undefined,
-            to_amount: type === 'transfer' && toAmount ? Math.abs(parseFloat(toAmount)) : undefined
-        });
+      const todayStr = new Date().toISOString().split('T')[0];
+      let finalDateStr: string;
 
+      if (date === todayStr) {
+        finalDateStr = new Date().toISOString();
+      } else {
+        finalDateStr = new Date(date + 'T12:00:00.000Z').toISOString();
+      }
+
+      await createTransaction({
+        account_id: accountId,
+        type,
+        amount: finalAmount,
+        category: category || '默认',
+        date: finalDateStr,
+        description,
+        to_account_id: type === 'transfer' ? toAccountId : undefined,
+        to_amount: type === 'transfer' && toAmount ? Math.abs(parseFloat(toAmount)) : undefined
+      });
+
+      const closeHandler = () => {
         setOpen(false);
-        onSuccess?.({
-          accountId,
-          type,
-          toAccountId: type === 'transfer' ? toAccountId : undefined,
-        });
+        if (editMode) {
+          onClose?.();
+        }
+      };
+      closeHandler();
+
+      onSuccess?.({
+        accountId,
+        type,
+        toAccountId: type === 'transfer' ? toAccountId : undefined,
+      });
     } catch (error) {
-        console.error(error);
-        alert("保存失败");
+      console.error(error);
+      alert(editMode ? "更新失败" : "保存失败");
     } finally {
-        setSubmitting(false);
+      setSubmitting(false);
     }
   };
-  
-  const getAccountCurrency = (id: string) => accounts.find(a => a.id === id)?.currency || "";
+
+  const getAccountCurrency = (accId: string) => {
+    const acc = accounts.find(a => a.id === accId);
+    return acc?.currency || 'CNY';
+  };
+
+  // Handle dialog close - important for edit mode
+  const handleOpenChange = (newOpen: boolean) => {
+    setOpen(newOpen);
+    // When dialog is closed, call onClose to clear editingTransaction state
+    if (!newOpen && editMode && onClose) {
+      onClose();
+    }
+  };
 
   return (
-     <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         {trigger || (
           <Button className="bg-black text-white hover:bg-black/90 shadow-lg rounded-full px-6">
@@ -188,42 +251,41 @@ export function TransactionModal({ accounts = [], onSuccess, trigger, defaultAcc
       </DialogTrigger>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>记一笔</DialogTitle>
+          <DialogTitle>{editMode ? "编辑交易" : "记一笔"}</DialogTitle>
         </DialogHeader>
 
-        {/* Type Switcher */}
-        <div className="grid grid-cols-3 gap-2 mb-4 p-1 bg-gray-100 rounded-lg">
-          <button
-            type="button"
-            onClick={() => setType("expense")}
-            className={`text-sm font-medium py-1.5 rounded-md transition-all ${
-              type === "expense" ? "bg-white shadow-sm text-red-600" : "text-gray-500 hover:text-gray-900"
-            }`}
-          >
-            支出
-          </button>
-          <button
-            type="button"
-            onClick={() => setType("income")}
-            className={`text-sm font-medium py-1.5 rounded-md transition-all ${
-              type === "income" ? "bg-white shadow-sm text-green-600" : "text-gray-500 hover:text-gray-900"
-            }`}
-          >
-            收入
-          </button>
-          <button
-            type="button"
-            onClick={() => setType("transfer")}
-            className={`text-sm font-medium py-1.5 rounded-md transition-all ${
-              type === "transfer" ? "bg-white shadow-sm text-blue-600" : "text-gray-500 hover:text-gray-900"
-            }`}
-          >
-            划转
-          </button>
-        </div>
+        {/* Type Switcher - Hide in edit mode */}
+        {!editMode && (
+          <div className="grid grid-cols-3 gap-2 mb-4 p-1 bg-gray-100 rounded-lg">
+            <button
+              type="button"
+              onClick={() => setType("expense")}
+              className={`text-sm font-medium py-1.5 rounded-md transition-all ${type === "expense" ? "bg-white shadow-sm text-red-600" : "text-gray-500 hover:text-gray-900"
+                }`}
+            >
+              支出
+            </button>
+            <button
+              type="button"
+              onClick={() => setType("income")}
+              className={`text-sm font-medium py-1.5 rounded-md transition-all ${type === "income" ? "bg-white shadow-sm text-green-600" : "text-gray-500 hover:text-gray-900"
+                }`}
+            >
+              收入
+            </button>
+            <button
+              type="button"
+              onClick={() => setType("transfer")}
+              className={`text-sm font-medium py-1.5 rounded-md transition-all ${type === "transfer" ? "bg-white shadow-sm text-blue-600" : "text-gray-500 hover:text-gray-900"
+                }`}
+            >
+              划转
+            </button>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          
+
           {/* Amount & Account Row */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -264,63 +326,63 @@ export function TransactionModal({ accounts = [], onSuccess, trigger, defaultAcc
             </div>
           </div>
 
-          {/* Transfer: Target Account & Amount - 与上方转出行对齐 */}
+          {/* Transfer: Target Account & Amount */}
           {type === 'transfer' && (
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="toAmount">转入金额 (选填)</Label>
-                  <div className="relative">
-                    <Input
-                      id="toAmount"
-                      type="number"
-                      placeholder={amount || "0.00"} 
-                      step="0.01"
-                      value={toAmount}
-                      onChange={(e) => setToAmount(e.target.value)}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="toAmount">转入金额 (选填)</Label>
+                <div className="relative">
+                  <Input
+                    id="toAmount"
+                    type="number"
+                    placeholder={amount || "0.00"}
+                    step="0.01"
+                    value={toAmount}
+                    onChange={(e) => setToAmount(e.target.value)}
                     className="pl-8 text-lg font-semibold"
-                    />
-                     <span className="absolute left-3 top-2.5 text-gray-500 text-sm">
-                      {getAccountCurrency(toAccountId) === 'CNY' ? '¥' : '$'}
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-gray-500">留空则默认等于转出金额</p>
+                  />
+                  <span className="absolute left-3 top-2.5 text-gray-500 text-sm">
+                    {getAccountCurrency(toAccountId) === 'CNY' ? '¥' : '$'}
+                  </span>
                 </div>
+                <p className="text-[10px] text-gray-500">留空则默认等于转出金额</p>
+              </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="toAccount">转入账户</Label>
-                  <select
-                    id="toAccount"
-                    className="flex h-10 w-full items-center justify-between rounded-md border border-gray-200 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-950 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                    value={toAccountId}
-                    onChange={(e) => setToAccountId(e.target.value)}
-                    required
-                  >
-                    {accounts.filter(a => a.id !== accountId).map(acc => (
-                      <option key={acc.id} value={acc.id}>
-                        {acc.name} ({acc.currency})
-                      </option>
-                    ))}
-                  </select>
+              <div className="space-y-2">
+                <Label htmlFor="toAccount">转入账户</Label>
+                <select
+                  id="toAccount"
+                  className="flex h-10 w-full items-center justify-between rounded-md border border-gray-200 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-950 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  value={toAccountId}
+                  onChange={(e) => setToAccountId(e.target.value)}
+                  required
+                >
+                  {accounts.filter(a => a.id !== accountId).map(acc => (
+                    <option key={acc.id} value={acc.id}>
+                      {acc.name} ({acc.currency})
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
           )}
 
           {/* Category & Date */}
           <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                <Label htmlFor="category">分类</Label>
-                <select
-                    id="category"
-                    className="flex h-10 w-full items-center justify-between rounded-md border border-gray-200 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-950 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                >
-                    {currentCategories.map(c => (
-                    <option key={c} value={c}>{c}</option>
-                    ))}
-                </select>
-                </div>
-            
+            <div className="space-y-2">
+              <Label htmlFor="category">分类</Label>
+              <select
+                id="category"
+                className="flex h-10 w-full items-center justify-between rounded-md border border-gray-200 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-950 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+              >
+                {currentCategories.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="date">日期</Label>
               <div className="relative">
@@ -356,7 +418,7 @@ export function TransactionModal({ accounts = [], onSuccess, trigger, defaultAcc
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </DialogContent >
+    </Dialog >
   );
 }

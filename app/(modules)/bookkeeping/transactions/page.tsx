@@ -2,7 +2,8 @@
 
 import * as React from "react";
 import { useInView } from "react-intersection-observer";
-import { getTransactions, TransactionFilter, getAccountsWithBalance, getAvailableTags } from "@/lib/bookkeeping/actions";
+import { getTransactions, TransactionFilter, deleteTransaction } from "@/lib/bookkeeping/actions";
+import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 import { TransactionItem } from "@/components/TransactionItem";
 import { Loader2, Filter, Wallet, ArrowUpCircle, ArrowDownCircle, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -145,11 +146,10 @@ const TimeRangeSelector: React.FC<TimeRangeSelectorProps> = ({
                             <button
                                 type="button"
                                 onClick={() => toggleSelection(option)}
-                                className={`relative px-4 py-1 text-sm font-medium rounded-md transition-colors duration-200 ease-out whitespace-nowrap ${
-                                    isSelected
-                                        ? 'text-white shadow-sm z-10'
-                                        : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900'
-                                }`}
+                                className={`relative px-4 py-1 text-sm font-medium rounded-md transition-colors duration-200 ease-out whitespace-nowrap ${isSelected
+                                    ? 'text-white shadow-sm z-10'
+                                    : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900'
+                                    }`}
                                 style={
                                     isSelected
                                         ? { backgroundColor: '#2563eb', color: '#fff' }
@@ -158,7 +158,7 @@ const TimeRangeSelector: React.FC<TimeRangeSelectorProps> = ({
                             >
                                 {option}
                             </button>
-                            
+
                             {!isLast && (
                                 <div
                                     className={`w-px h-3 mx-0.5 transition-opacity duration-200 ${hideDivider ? 'opacity-0' : 'bg-gray-300'}`}
@@ -180,6 +180,10 @@ export default function TransactionsPage() {
     const [page, setPage] = React.useState(0);
     const [hasMore, setHasMore] = React.useState(true);
 
+    // Edit/Delete States
+    const [editingTransaction, setEditingTransaction] = React.useState<any | null>(null);
+    const [deletingId, setDeletingId] = React.useState<string | null>(null);
+
     // Filter State
     const [showFilters, setShowFilters] = React.useState(false);
     const [filters, setFilters] = React.useState<TransactionFilter>({});
@@ -194,18 +198,21 @@ export default function TransactionsPage() {
     // 全局显示设置
     const { settings: displaySettings } = useBookkeepingSettings();
 
+    // 使用缓存Hook
+    const cache = useBookkeepingCache();
+
     const { ref, inView } = useInView();
 
-    // Load Initial Data
+    // Load Initial Data (accounts and tags from cache)
     React.useEffect(() => {
         Promise.all([
-            getAccountsWithBalance(),
-            getAvailableTags()
+            cache.getAccounts({ includeBalance: true }),
+            cache.getTags()
         ]).then(([accData, tagData]) => {
             setAccounts(accData as any);
             setAvailableTags(tagData);
         }).catch(console.error);
-    }, []);
+    }, [cache.getAccounts, cache.getTags]); // ✅ 只依赖稳定的函数
 
     const loadTransactions = async (isRefresh = false) => {
         if (isRefresh) {
@@ -217,16 +224,21 @@ export default function TransactionsPage() {
 
         try {
             const currentPage = isRefresh ? 0 : page;
-            const newTx = await getTransactions({ page: currentPage, filters });
+            const newTx = await getTransactions({
+                page: currentPage,
+                filters
+            });
 
             if (newTx.length === 0) {
                 setHasMore(false);
             } else {
                 setTransactions(prev => isRefresh ? newTx : [...prev, ...newTx]);
-                setPage(currentPage + 1);
+                if (!isRefresh) {
+                    setPage(prev => prev + 1);
+                }
             }
         } catch (error) {
-            console.error("Failed to load transactions", error);
+            console.error('Failed to load transactions:', error);
         } finally {
             setLoading(false);
         }
@@ -414,7 +426,7 @@ export default function TransactionsPage() {
         const dbTags = availableTags;
         // Group by Kind
         const groups: Record<string, string[]> = { expense: [], income: [], transfer: [] };
-        
+
         // Only show available tags from DB
         dbTags.forEach((t: any) => {
             if (groups[t.kind]) {
@@ -471,6 +483,34 @@ export default function TransactionsPage() {
         return format(date, "M月d日 EEE", { locale: zhCN });
     };
 
+    const handleEdit = (transaction: any) => {
+        setEditingTransaction(transaction);
+    };
+
+    const handleDelete = async (transaction: any) => {
+        if (!confirm(`确定删除这笔「${transaction.category}」交易吗？`)) return;
+
+        setDeletingId(transaction.id);
+        try {
+            await deleteTransaction(transaction.id);
+            // 删除后失效缓存并刷新
+            await cache.invalidateAndRefresh(['transactions', 'accounts']);
+            await loadTransactions(true);
+        } catch (error) {
+            console.error(error);
+            alert("删除失败");
+        } finally {
+            setDeletingId(null);
+        }
+    };
+
+    const handleEditSuccess = async () => {
+        setEditingTransaction(null);
+        // 编辑成功后失效缓存并刷新
+        await cache.invalidateAndRefresh(['transactions', 'accounts']);
+        await loadTransactions(true);
+    };
+
     return (
         <div className="h-full flex flex-col -m-6 bg-white">
             {/* Header & Filters */}
@@ -495,7 +535,7 @@ export default function TransactionsPage() {
                                         <ArrowDownCircle size={14} />
                                         <span>收入 ¥{formatAmount(stats.income, displaySettings)}</span>
                                     </div>
-                                    
+
                                     <div className="flex items-center gap-1.5" style={{ color: colors.expense }}>
                                         <ArrowUpCircle size={14} />
                                         <span>支出 ¥{formatAmount(stats.expense, displaySettings)}</span>
@@ -568,29 +608,29 @@ export default function TransactionsPage() {
                                     onChange={handleAccountSelectorChange}
                                     className="w-full"
                                 />
-                            </div>                        
-                            
+                            </div>
+
                             <div className="flex flex-col gap-3 w-full">
                                 {tagGroups.map(group => (
                                     <div key={group.label} className="w-full overflow-x-auto">
                                         <TimeRangeSelector
-                                        label={group.label}
-                                        options={["全部标签", ...group.items]}
-                                        selectedValues={tagSelectedLabels(group.items)}
-                                        onChange={handleTagGroupChange(group.items)}
-                                        className="w-full"
+                                            label={group.label}
+                                            options={["全部标签", ...group.items]}
+                                            selectedValues={tagSelectedLabels(group.items)}
+                                            onChange={handleTagGroupChange(group.items)}
+                                            className="w-full"
                                         />
                                     </div>
-                                    ))}
-                                </div>
+                                ))}
                             </div>
+                        </div>
                     </div>
                 )}
 
                 {/* Table Header */}
                 <div
                     className="mt-4 pt-2 border-t border-gray-100 text-xs font-medium text-gray-500 grid"
-                    style={{ gridTemplateColumns: '180px 100px 220px 80px minmax(200px, 1fr) 200px 40px' }}
+                    style={{ gridTemplateColumns: '180px 100px 220px 80px minmax(200px, 1fr) 160px 80px' }}
                 >
                     <div>分类</div>
                     <div className="px-2">标签</div>
@@ -637,6 +677,9 @@ export default function TransactionsPage() {
                                         isMergedTransfer={!!tx.relatedTransfer}
                                         colors={colors}
                                         displaySettings={displaySettings}
+                                        onEdit={handleEdit}
+                                        onDelete={handleDelete}
+                                        isDeleting={deletingId === tx.id}
                                     />
                                 ))}
                             </div>
@@ -662,6 +705,28 @@ export default function TransactionsPage() {
             <div className="fixed bottom-8 right-8">
                 <TransactionModal accounts={accounts} onSuccess={() => loadTransactions(true)} />
             </div>
+
+            {/* Edit Modal */}
+            {editingTransaction && (
+                <TransactionModal
+                    accounts={accounts}
+                    editMode={true}
+                    initialData={{
+                        id: editingTransaction.id,
+                        type: editingTransaction.type,
+                        amount: editingTransaction.amount,
+                        category: editingTransaction.category,
+                        description: editingTransaction.description,
+                        date: editingTransaction.date,
+                        account_id: editingTransaction.account_id,
+                        to_account_id: editingTransaction.to_account_id,
+                        to_amount: editingTransaction.to_amount,
+                    }}
+                    onSuccess={handleEditSuccess}
+                    onClose={() => setEditingTransaction(null)}
+                    trigger={<div />}
+                />
+            )}
         </div>
     );
 }

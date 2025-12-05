@@ -5,11 +5,13 @@ import { Heatmap } from "./components/Heatmap";
 import { TransactionExplorer } from "./components/TransactionExplorer";
 import { LifeRecipe } from "./components/LifeRecipe";
 import { BudgetTracker } from "./components/BudgetTracker";
-import { getDashboardTransactions, getTodayCheckin, handleDailyCheckin } from "@/lib/bookkeeping/actions";
+import { getTodayCheckin, handleDailyCheckin } from "@/lib/bookkeeping/actions";
+import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 import { Button } from "@/components/ui/button";
 import { CheckCircle, RefreshCw, Loader2 } from "lucide-react";
 
 export default function DashboardPage() {
+  const cache = useBookkeepingCache(); // ✅ 使用缓存
   const [transactions, setTransactions] = React.useState<any[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [checkedToday, setCheckedToday] = React.useState(false);
@@ -22,7 +24,7 @@ export default function DashboardPage() {
   const fetchData = React.useCallback(async () => {
     try {
       const [txData, checkinData] = await Promise.all([
-        getDashboardTransactions(),
+        cache.getDashboardTransactions(),  // ✅ 从缓存获取1年内流水
         getTodayCheckin(),
       ]);
       setTransactions(txData || []);
@@ -30,7 +32,7 @@ export default function DashboardPage() {
     } catch (err) {
       console.error("Failed to load dashboard data", err);
     }
-  }, []);
+  }, [cache.getDashboardTransactions]); // ✅ 使用稳定函数引用
 
   React.useEffect(() => {
     fetchData().finally(() => setLoading(false));
@@ -45,7 +47,9 @@ export default function DashboardPage() {
         executed: result.refreshResult.periodicTasks.executed,
         isFirstCheckin: result.isFirstCheckin,
       });
-      // 刷新数据
+      // ✅ 刷新所有缓存数据（包括预算的actual_amount）
+      await cache.invalidateAndRefresh('all');
+      // 刷新本地transactions
       await fetchData();
     } catch (err) {
       console.error("Check-in failed", err);
@@ -73,13 +77,13 @@ export default function DashboardPage() {
         <div className="flex items-center gap-3">
           {lastResult && (
             <span className="text-sm text-gray-500">
-              {lastResult.isFirstCheckin 
-                ? `已打卡，执行了 ${lastResult.executed} 笔周期交易` 
+              {lastResult.isFirstCheckin
+                ? `已打卡，执行了 ${lastResult.executed} 笔周期交易`
                 : `已刷新，执行了 ${lastResult.executed} 笔周期交易`}
             </span>
           )}
-          <Button 
-            onClick={handleCheckin} 
+          <Button
+            onClick={handleCheckin}
             disabled={checking}
             variant={checkedToday ? "outline" : "default"}
             className="gap-2"

@@ -3,10 +3,15 @@ import { calculateBalance } from './logic';
 import { AccountType, Currency } from '@/lib/constants';
 import { Database, Json, SnapshotRow, TransactionRow, ReconciliationIssueRow, PeriodicTaskRow, DailyCheckinRow, BudgetPlanRow, BudgetPeriodRecordRow, CurrencyRateRow } from '@/types/database';
 
-// --- Accounts ---
-type AccountRowDB = Database['public']['Tables']['accounts']['Row'];
+// --- Account Management ---
 
-export async function getAccountsWithBalance() {
+/**
+ * Unified account query function
+ * @param options.includeBalance - Whether to calculate balance from transactions (default: true)
+ */
+export async function getAccounts(options?: { includeBalance?: boolean }) {
+  const { includeBalance = true } = options || {};
+
   const { data: accounts, error } = await supabase
     .from('accounts')
     .select('*')
@@ -15,17 +20,47 @@ export async function getAccountsWithBalance() {
   if (error) throw error;
   if (!accounts) return [];
 
+  if (!includeBalance) {
+    // Return basic account info only (cast to proper type)
+    return accounts.map((acc: any) => ({
+      id: acc.id,
+      name: acc.name,
+      currency: acc.currency,
+    }));
+  }
+
+  // Calculate balance for each account
   const accountsWithBalance = await Promise.all(
-    (accounts as AccountRowDB[]).map(async (acc) => {
-      const balance = await calculateBalance(supabase, acc.id, new Date());
+    accounts.map(async (account: any) => {
+      const { data: transactions } = await supabase
+        .from('transactions')
+        .select('amount')
+        .eq('account_id', account.id);
+
+      const balance = (transactions || []).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+
       return {
-        ...acc,
-        balance,
+        ...account,
+        balance: Number(balance.toFixed(2)),
       };
     })
   );
 
   return accountsWithBalance;
+}
+
+/**
+ * @deprecated Use getAccounts({ includeBalance: true }) instead
+ */
+export async function getAccountsWithBalance() {
+  return getAccounts({ includeBalance: true });
+}
+
+/**
+ * @deprecated Use getAccounts({ includeBalance: false }) instead
+ */
+export async function getAccountsMeta(): Promise<{ id: string; name: string; currency: string }[]> {
+  return getAccounts({ includeBalance: false }) as Promise<{ id: string; name: string; currency: string }[]>;
 }
 
 export async function createAccount(data: { name: string; type: AccountType; currency: Currency }) {
@@ -41,16 +76,6 @@ export async function updateAccount(id: string, data: { name?: string; type?: Ac
 export async function deleteAccount(id: string) {
   const { error } = await supabase.from('accounts').delete().eq('id', id);
   if (error) throw error;
-}
-
-export async function getAccountsMeta(): Promise<{ id: string; name: string; currency: string }[]> {
-  const { data, error } = await supabase
-    .from('accounts')
-    .select('id, name, currency')
-    .order('created_at', { ascending: true });
-
-  if (error) throw error;
-  return (data || []) as { id: string; name: string; currency: string }[];
 }
 
 // --- Transactions ---
@@ -120,6 +145,75 @@ async function createTransfer(data: TransactionData) {
   if (error) throw error;
 }
 
+/**
+ * Delete a transaction (and its transfer pair if applicable)
+ */
+export async function deleteTransaction(id: string) {
+  // First, get the transaction to check if it's a transfer
+  const { data: transaction, error: fetchError } = await supabase
+    .from('transactions')
+    .select('type, transfer_group_id')
+    .eq('id', id)
+    .single();
+
+  if (fetchError) throw fetchError;
+
+  // If it's a transfer with a group ID, delete all transactions in the group
+  if (transaction.type === 'transfer' && transaction.transfer_group_id) {
+    const { error } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('transfer_group_id', transaction.transfer_group_id);
+
+    if (error) throw error;
+  } else {
+    // Otherwise, just delete this transaction
+    const { error } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+  }
+}
+
+/**
+ * Update a transaction
+ * Note: For transfers, this only updates metadata (category, description, date).
+ * Changing amounts/accounts requires deleting and recreating.
+ */
+export async function updateTransaction(
+  id: string,
+  data: Partial<Pick<TransactionRow, 'category' | 'description' | 'date'>>
+) {
+  // Get the transaction to check if it's a transfer
+  const { data: transaction, error: fetchError } = await supabase
+    .from('transactions')
+    .select('type, transfer_group_id')
+    .eq('id', id)
+    .single();
+
+  if (fetchError) throw fetchError;
+
+  // If it's a transfer with a group ID, update both transactions in the group
+  if (transaction.type === 'transfer' && transaction.transfer_group_id) {
+    const { error } = await supabase
+      .from('transactions')
+      .update(data)
+      .eq('transfer_group_id', transaction.transfer_group_id);
+
+    if (error) throw error;
+  } else {
+    // Otherwise, just update this transaction
+    const { error } = await supabase
+      .from('transactions')
+      .update(data)
+      .eq('id', id);
+
+    if (error) throw error;
+  }
+}
+
 export async function getAvailableTags() {
   const { data, error } = await supabase
     .from('bookkeeping_tags')
@@ -145,7 +239,26 @@ export interface TransactionFilter {
 
 const PAGE_SIZE = 20;
 
-export async function getTransactions({ page = 0, filters = {} }: { page?: number; filters?: TransactionFilter }) {
+/**
+ * Unified transaction query function
+ * Supports both paginated queries (Transactions page) and full queries (Dashboard)
+ */
+export async function getTransactions(options?: {
+  page?: number;
+  pageSize?: number;
+  filters?: TransactionFilter;
+  sort?: {
+    by?: 'date' | 'amount';
+    direction?: 'asc' | 'desc';
+  };
+}) {
+  const {
+    page,
+    pageSize = PAGE_SIZE,
+    filters = {},
+    sort = { by: 'date', direction: 'desc' },
+  } = options || {};
+
   let query = supabase
     .from('transactions')
     .select(`
@@ -154,10 +267,9 @@ export async function getTransactions({ page = 0, filters = {} }: { page?: numbe
         name,
         currency
       )
-    `)
-    .order('date', { ascending: false })
-    .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+    `);
 
+  // Apply filters
   if (filters.type && filters.type !== 'all') {
     query = query.eq('type', filters.type as 'income' | 'expense' | 'transfer');
   }
@@ -170,9 +282,6 @@ export async function getTransactions({ page = 0, filters = {} }: { page?: numbe
       query = query.eq('account_id', filters.accountId);
     }
   }
-  // Filter by tags? 
-  // NOTE: Current implementation does exact match on 'category' column which stores tag name.
-  // If user wants to filter by active tags vs disabled tags, this logic relies on what frontend passes.
   if (filters.category) {
     if (Array.isArray(filters.category)) {
       if (filters.category.length > 0) {
@@ -211,24 +320,34 @@ export async function getTransactions({ page = 0, filters = {} }: { page?: numbe
     query = query.or(orClauses.join(','));
   }
 
+  // Apply sorting
+  const sortBy = sort.by || 'date';
+  const sortAscending = sort.direction === 'asc';
+  query = query.order(sortBy, { ascending: sortAscending });
+
+  // Apply pagination if specified
+  if (typeof page === 'number') {
+    query = query.range(page * pageSize, (page + 1) * pageSize - 1);
+  }
+
   const { data, error } = await query;
 
   if (error) throw error;
   return data;
 }
 
+/**
+ * @deprecated Use getTransactions({ filters: { startDate: oneYearAgo }, sort: { direction: 'asc' } }) instead
+ * Keeping for backward compatibility during migration
+ */
 export async function getDashboardTransactions() {
   const oneYearAgo = new Date();
   oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
 
-  const { data, error } = await supabase
-    .from('transactions')
-    .select('*')
-    .gte('date', oneYearAgo.toISOString())
-    .order('date', { ascending: true });
-
-  if (error) throw error;
-  return data;
+  return getTransactions({
+    filters: { startDate: oneYearAgo.toISOString() },
+    sort: { by: 'date', direction: 'asc' },
+  });
 }
 
 // --- Snapshots ---
@@ -1131,24 +1250,37 @@ export async function handleDailyCheckin(): Promise<{
   };
 }
 
-// --- Budget Plans ---
 
-export interface BudgetPlanWithRecords extends BudgetPlanRow {
+// ===== Budget Plans =====
+
+export type BudgetPlanWithRecords = BudgetPlanRow & {
   records: BudgetPeriodRecordRow[];
-}
+};
 
 /**
- * 获取所有预算计划（包含周期记录）
+ * Unified budget plan query function
+ * @param options.type - Filter by plan type: 'all' | 'category' | 'total' (default: 'all')
+ * @param options.status - Filter by status: 'active' | 'expired' | 'paused' (optional)
+ * @param options.includeRecords - Whether to include period records (default: true)
  */
-export async function getBudgetPlans(status?: 'active' | 'expired' | 'paused'): Promise<BudgetPlanWithRecords[]> {
+export async function getBudgetPlans(options?: {
+  type?: 'all' | 'category' | 'total';
+  status?: 'active' | 'expired' | 'paused';
+  includeRecords?: boolean;
+}): Promise<BudgetPlanWithRecords[]> {
+  const { type = 'all', status, includeRecords = true } = options || {};
+
   let query = supabase
     .from('budget_plans')
-    .select(`
-      *,
-      records:budget_period_records (*)
-    `)
+    .select(includeRecords ? `*, records:budget_period_records (*)` : '*')
     .order('created_at', { ascending: false });
 
+  // Filter by plan type
+  if (type !== 'all') {
+    query = query.eq('plan_type', type);
+  }
+
+  // Filter by status
   if (status) {
     query = query.eq('status', status);
   }
@@ -1156,8 +1288,32 @@ export async function getBudgetPlans(status?: 'active' | 'expired' | 'paused'): 
   const { data, error } = await query;
   if (error) throw error;
 
-  return (data || []) as BudgetPlanWithRecords[];
+  return (data || []) as unknown as BudgetPlanWithRecords[];
 }
+
+/**
+ * @deprecated Use getBudgetPlans({ type: 'total', status: 'active' }) instead
+ * Get the single total budget plan  
+ */
+export async function getTotalBudgetPlan(): Promise<BudgetPlanWithRecords | null> {
+  const plans = await getBudgetPlans({
+    type: 'total',
+  });
+
+  // Filter to only non-expired
+  const activePlans = plans.filter(p => p.status !== 'expired');
+  return activePlans[0] || null;
+}
+
+/**
+ * @deprecated Use getBudgetPlans({ status: 'active' }) instead
+ * Kept for legacy code during migration
+ */
+export async function getLegacyBudgetPlans(status?: 'active' | 'expired' | 'paused'): Promise<BudgetPlanWithRecords[]> {
+  return getBudgetPlans({ status });
+}
+
+// ===== Budget Plans Management (CRUD) =====
 
 /**
  * 获取单个预算计划
@@ -1173,24 +1329,6 @@ export async function getBudgetPlan(id: string): Promise<BudgetPlanWithRecords |
     .single();
 
   if (error && error.code !== 'PGRST116') throw error;
-  return data as BudgetPlanWithRecords | null;
-}
-
-/**
- * 获取总支出计划（只有一个）
- */
-export async function getTotalBudgetPlan(): Promise<BudgetPlanWithRecords | null> {
-  const { data, error } = await supabase
-    .from('budget_plans')
-    .select(`
-      *,
-      records:budget_period_records (*)
-    `)
-    .eq('plan_type', 'total')
-    .neq('status', 'expired')
-    .maybeSingle();
-
-  if (error) throw error;
   return data as BudgetPlanWithRecords | null;
 }
 
@@ -1848,6 +1986,7 @@ export async function checkExpiredBudgetPlans(): Promise<void> {
 
 /**
  * 获取仪表盘预算数据
+ * 自动更新所有活跃计划的当前周期actual_amount
  */
 export async function getDashboardBudgetData(): Promise<{
   plans: Array<{
@@ -1882,6 +2021,16 @@ export async function getDashboardBudgetData(): Promise<{
       r => r.period_start <= today && r.period_end >= today
     ) || null;
 
+    // ✅ 自动更新当前周期的actual_amount
+    if (currentPeriod && plan.status === 'active') {
+      try {
+        await updateBudgetPeriodRecord(currentPeriod.id);
+      } catch (err) {
+        console.error(`Failed to update period record ${currentPeriod.id}:`, err);
+        // 继续处理其他计划，不抛出错误
+      }
+    }
+
     result.push({
       plan: plan as BudgetPlanRow,
       currentPeriod,
@@ -1889,7 +2038,37 @@ export async function getDashboardBudgetData(): Promise<{
     });
   }
 
-  return { plans: result };
+  // ✅ 重新获取更新后的数据
+  const { data: updatedPlans, error: refetchError } = await supabase
+    .from('budget_plans')
+    .select(`
+      *,
+      records:budget_period_records (*)
+    `)
+    .eq('status', 'active')
+    .order('plan_type', { ascending: false })
+    .order('created_at', { ascending: true });
+
+  if (refetchError) throw refetchError;
+
+  const finalResult = [];
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const plan of (updatedPlans || []) as any[]) {
+    const records = (plan.records || []) as BudgetPeriodRecordRow[];
+
+    const currentPeriod = records.find(
+      r => r.period_start <= today && r.period_end >= today
+    ) || null;
+
+    finalResult.push({
+      plan: plan as BudgetPlanRow,
+      currentPeriod,
+      allRecords: records.sort((a, b) => a.period_index - b.period_index),
+    });
+  }
+
+  return { plans: finalResult };
 }
 
 // --- Data Import/Export ---

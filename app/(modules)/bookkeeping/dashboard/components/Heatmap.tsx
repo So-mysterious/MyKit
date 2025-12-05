@@ -1,21 +1,22 @@
 "use client";
 
 import * as React from "react";
-import { 
-    format, 
-    subMonths, 
-    startOfYear, 
-    endOfYear, 
-    startOfMonth, 
-    endOfMonth, 
-    eachDayOfInterval, 
+import {
+    format,
+    subMonths,
+    startOfYear,
+    endOfYear,
+    startOfMonth,
+    endOfMonth,
+    eachDayOfInterval,
     isSameDay,
     isAfter,
     startOfDay
 } from "date-fns";
 import { zhCN } from "date-fns/locale";
 import { cn } from "@/lib/utils";
-import { getBookkeepingSettings } from "@/lib/bookkeeping/actions";
+import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
+import { useBookkeepingColors } from "@/lib/bookkeeping/useColors";
 
 // --- Types ---
 
@@ -47,18 +48,18 @@ function getShade(colorHex: string, level: number) {
     // level is 1, 2, or 3 (intensity)
     // 3 is darkest/purest, 1 is lightest
     const opacity = level === 3 ? 1 : level === 2 ? 0.6 : 0.3;
-    
+
     const hex = colorHex.replace('#', '');
     const r = parseInt(hex.substring(0, 2), 16);
     const g = parseInt(hex.substring(2, 4), 16);
     const b = parseInt(hex.substring(4, 6), 16);
-    
+
     return `rgba(${r}, ${g}, ${b}, ${opacity})`;
 }
 
 function getColorStyle(level: HeatmapLevel, colors: { expense: string; income: string }) {
     if (level === 0) return "#f3f4f6"; // gray-100
-    
+
     if (level > 0) {
         // Positive/Income
         return getShade(colors.income, level);
@@ -81,8 +82,8 @@ function Block({ date, value, level, isSelected, isFuture, onClick, colors }: Bl
                 isSelected && "ring-2 ring-offset-1 ring-black z-10 scale-110 relative",
                 level === 0 && "border border-black/5" // Add border for empty cells
             )}
-            style={{ 
-                width: '20px', 
+            style={{
+                width: '20px',
                 height: '20px',
                 backgroundColor: bgStyle,
                 borderRadius: '6px'
@@ -95,30 +96,30 @@ function Block({ date, value, level, isSelected, isFuture, onClick, colors }: Bl
 function Legend({ colors }: { colors: { expense: string; income: string } }) {
     const levels: HeatmapLevel[] = [-3, -2, -1, 0, 1, 2, 3];
     const labels = ["-3", "-2", "-1", "0", "1", "2", "3"];
-    
+
     return (
         <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm w-full flex flex-col items-center justify-center gap-3">
-             <div className="flex gap-3">
+            <div className="flex gap-3">
                 {levels.map((level, index) => (
                     <div key={level} className="flex flex-col items-center gap-2">
-                        <div 
+                        <div
                             className={cn(
                                 "w-8 h-8 shadow-sm",
                                 level === 0 && "border border-black/5"
-                            )} 
-                            style={{ 
+                            )}
+                            style={{
                                 backgroundColor: getColorStyle(level, colors),
-                                borderRadius: '8px' 
+                                borderRadius: '8px'
                             }}
                         />
                         <span className="text-xs text-gray-400 font-mono">{labels[index]}</span>
                     </div>
                 ))}
-             </div>
-             <div className="flex justify-between w-full max-w-[280px] text-xs text-gray-400 px-2">
-                 <span>支出 (标准差)</span>
-                 <span>收入 (标准差)</span>
-             </div>
+            </div>
+            <div className="flex justify-between w-full max-w-[280px] text-xs text-gray-400 px-2">
+                <span>支出 (标准差)</span>
+                <span>收入 (标准差)</span>
+            </div>
         </div>
     );
 }
@@ -127,62 +128,39 @@ function Legend({ colors }: { colors: { expense: string; income: string } }) {
 
 export function Heatmap({ transactions }: HeatmapProps) {
     const today = startOfDay(new Date());
-    const [colors, setColors] = React.useState({ expense: '#ef4444', income: '#22c55e' });
+    const cache = useBookkeepingCache(); // ✅ 使用缓存
+    const { colors } = useBookkeepingColors(); // ✅ 从缓存获取颜色
+    const [dataMap, setDataMap] = React.useState<Map<string, number> | null>(null); // ✅ 初始为null
+    const [stats, setStats] = React.useState<HeatmapStats>({ mean: 0, stdDev: 0 });
+    const [loading, setLoading] = React.useState(true);
 
+    // ✅ 从缓存获取聚合数据（而不是从transactions计算）
     React.useEffect(() => {
-        getBookkeepingSettings().then(s => {
-            setColors({ expense: s.expense_color, income: s.income_color });
-        });
-    }, []);
-    
-    // 1. Process Data & Calculate Stats
-    const { dataMap, stats } = React.useMemo(() => {
-        const map = new Map<string, number>();
-        const values: number[] = [];
-
-        transactions.forEach(tx => {
-            const date = new Date(tx.date);
-            const dateStr = format(date, 'yyyy-MM-dd');
-            // Net amount: income is positive, expense is negative
-            const amount = tx.type === 'expense' ? -Math.abs(tx.amount) : (tx.type === 'income' ? tx.amount : 0);
-            
-            const current = map.get(dateStr) || 0;
-            const next = current + amount;
-            map.set(dateStr, next);
-        });
-        
-        // Collect all non-zero values for stats
-        map.forEach(val => {
-            if (val !== 0) values.push(val);
-        });
-
-        // Calculate Mean and StdDev
-        let mean = 0;
-        let stdDev = 0;
-
-        if (values.length > 0) {
-            const sum = values.reduce((a, b) => a + b, 0);
-            mean = sum / values.length;
-            
-            const squareDiffs = values.map(v => Math.pow(v - mean, 2));
-            const avgSquareDiff = squareDiffs.reduce((a, b) => a + b, 0) / values.length;
-            stdDev = Math.sqrt(avgSquareDiff);
-        }
-
-        return { dataMap: map, stats: { mean, stdDev } };
-    }, [transactions]);
+        const loadAggregation = async () => {
+            try {
+                const data = await cache.getHeatmapAggregation();
+                setDataMap(data.dataMap);
+                setStats(data.stats);
+            } catch (err) {
+                console.error("Failed to load heatmap aggregation:", err);
+            } finally {
+                setLoading(false);
+            }
+        };
+        loadAggregation();
+    }, [cache.getHeatmapAggregation]); // ✅ 稳定函数引用
 
     // 2. Level Calculation Logic (Based on StdDev)
     const getLevel = React.useCallback((val: number): HeatmapLevel => {
         if (val === 0) return 0;
-        
+
         // How many stdDevs away from mean?
         const isExpense = val < 0;
         const absVal = Math.abs(val);
-        
+
         // If stdDev is 0 (all values same), treat as level 1 if not 0
         const dev = stats.stdDev === 0 ? 1 : stats.stdDev;
-        
+
         const sigma = absVal / dev;
 
         let intensity = 1;
@@ -202,29 +180,40 @@ export function Heatmap({ transactions }: HeatmapProps) {
 
     const monthDays = React.useMemo(() => {
         try {
-            return eachDayOfInterval({ 
-                start: startOfMonth(subMonths(today, 1)), 
-                end: endOfMonth(today) 
+            return eachDayOfInterval({
+                start: startOfMonth(subMonths(today, 1)),
+                end: endOfMonth(today)
             });
         } catch (e) { return []; }
     }, [today]);
 
+    // ✅ 在dataMap加载完成前显示loading
+    if (loading || !dataMap) {
+        return (
+            <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm w-full">
+                <div className="flex items-center justify-center h-32 text-gray-400 text-sm">
+                    加载中...
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="flex flex-col gap-6 w-full min-w-0">
-            <HeatmapSection 
-                title="年度热力图" 
-                days={yearDays} 
-                dataMap={dataMap} 
-                getLevel={getLevel} 
+            <HeatmapSection
+                title="年度热力图"
+                days={yearDays}
+                dataMap={dataMap}
+                getLevel={getLevel}
                 today={today}
                 stats={stats}
                 colors={colors}
             />
-            <HeatmapSection 
-                title="月度热力图" 
-                days={monthDays} 
-                dataMap={dataMap} 
-                getLevel={getLevel} 
+            <HeatmapSection
+                title="月度热力图"
+                days={monthDays}
+                dataMap={dataMap}
+                getLevel={getLevel}
                 today={today}
                 stats={stats}
                 colors={colors}
@@ -264,7 +253,7 @@ function HeatmapSection({ title, days, dataMap, getLevel, today, stats, colors }
         <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm w-full min-w-0">
             {/* Header: Flex Row layout for Title, Stats, Date */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-2 gap-4 min-h-[40px]">
-                
+
                 {/* Left: Title */}
                 <h2 className="text-lg font-bold text-gray-900 shrink-0">{title}</h2>
 
@@ -279,13 +268,13 @@ function HeatmapSection({ title, days, dataMap, getLevel, today, stats, colors }
 
                     {/* Active Selection Amount */}
                     {selectedDate && (
-                         <div className={cn(
-                             "font-mono font-bold text-base",
-                             selectedVal > 0 ? "text-emerald-600" : 
-                             selectedVal < 0 ? "text-red-600" : "text-gray-500"
-                         )}>
-                             {selectedVal > 0 ? '+' : ''}¥{selectedVal.toFixed(2)}
-                         </div>
+                        <div className={cn(
+                            "font-mono font-bold text-base",
+                            selectedVal > 0 ? "text-emerald-600" :
+                                selectedVal < 0 ? "text-red-600" : "text-gray-500"
+                        )}>
+                            {selectedVal > 0 ? '+' : ''}¥{selectedVal.toFixed(2)}
+                        </div>
                     )}
                 </div>
 
@@ -299,12 +288,12 @@ function HeatmapSection({ title, days, dataMap, getLevel, today, stats, colors }
             <div style={{ height: '6px' }} />
 
             {/* Grid Container */}
-            <div 
+            <div
                 className="grid gap-1 w-full"
-                style={{ 
+                style={{
                     // Using 20px blocks
                     gridTemplateColumns: 'repeat(auto-fill, 20px)',
-                    justifyContent: 'start' 
+                    justifyContent: 'start'
                 }}
             >
                 {days.map(day => {

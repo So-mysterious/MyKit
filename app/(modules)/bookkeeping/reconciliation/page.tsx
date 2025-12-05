@@ -16,13 +16,12 @@ import { Input } from "@/components/ui/input";
 import { TransactionModal, TransactionModalSuccessPayload } from "@/components/TransactionModal";
 import { SnapshotDialog } from "@/components/SnapshotDialog";
 import {
-  getAccountsMeta,
-  getReconciliationIssues,
   resolveReconciliationIssue,
   runReconciliationCheck,
   regenerateIssuesForAccounts,
   getSnapshotsByIds,
 } from "@/lib/bookkeeping/actions";
+import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 import { Database } from "@/types/database";
 import { format } from "date-fns";
 import { zhCN } from "date-fns/locale";
@@ -53,6 +52,9 @@ export default function ReconciliationPage() {
   const [snapshotMap, setSnapshotMap] = React.useState<Record<string, SnapshotRow>>({});
   const [calibrateIssue, setCalibrateIssue] = React.useState<ReconciliationIssue | null>(null);
   const [calibrateAccountId, setCalibrateAccountId] = React.useState<string | null>(null);
+
+  // 使用缓存Hook
+  const cache = useBookkeepingCache();
 
   const initializedAccountRef = React.useRef(false);
 
@@ -85,7 +87,10 @@ export default function ReconciliationPage() {
   const fetchData = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [issueData, accountData] = await Promise.all([getReconciliationIssues("open"), getAccountsMeta()]);
+      const [issueData, accountData] = await Promise.all([
+        cache.getReconciliationIssues("open"), // ✅ 使用缓存
+        cache.getAccounts({ includeBalance: false }) // ✅ 使用缓存
+      ]);
       setIssues(issueData);
       await hydrateSnapshots(issueData);
       setAccounts(accountData as AccountMeta[]);
@@ -99,7 +104,7 @@ export default function ReconciliationPage() {
     } finally {
       setLoading(false);
     }
-  }, [hydrateSnapshots]);
+  }, [cache.getReconciliationIssues, cache.getAccounts, hydrateSnapshots]); // ✅ 只依赖稳定的函数
 
   React.useEffect(() => {
     fetchData();
@@ -367,7 +372,7 @@ export default function ReconciliationPage() {
                 选择需要校准的账户，输入该日期的实际余额。
               </DialogDescription>
             </DialogHeader>
-            
+
             <div className="space-y-4 py-2">
               {/* 账户选择 */}
               <div className="space-y-2">

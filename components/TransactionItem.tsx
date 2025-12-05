@@ -1,8 +1,9 @@
-import { ArrowRightLeft, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
+import { ArrowRightLeft, ArrowDownLeft, ArrowUpRight, Pencil, Trash2, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { formatAmount, BookkeepingSettings } from '@/lib/bookkeeping/useSettings';
+import { Button } from '@/components/ui/button';
 
 interface BookkeepingColors {
   expense: string;
@@ -15,6 +16,9 @@ interface TransactionItemProps {
   isMergedTransfer?: boolean;
   colors?: BookkeepingColors;
   displaySettings?: Partial<BookkeepingSettings>;
+  onEdit?: (transaction: any) => void;
+  onDelete?: (transaction: any) => void;
+  isDeleting?: boolean;
 }
 
 const DEFAULT_COLORS: BookkeepingColors = {
@@ -23,7 +27,15 @@ const DEFAULT_COLORS: BookkeepingColors = {
   transfer: "#0ea5e9",
 };
 
-export function TransactionItem({ transaction, isMergedTransfer, colors = DEFAULT_COLORS, displaySettings }: TransactionItemProps) {
+export function TransactionItem({
+  transaction,
+  isMergedTransfer,
+  colors = DEFAULT_COLORS,
+  displaySettings,
+  onEdit,
+  onDelete,
+  isDeleting = false,
+}: TransactionItemProps) {
   const { type, amount, category, description, date, accounts, relatedTransfer } = transaction;
   const [showTooltip, setShowTooltip] = useState(false);
   const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0, width: 0 });
@@ -84,7 +96,7 @@ export function TransactionItem({ transaction, isMergedTransfer, colors = DEFAUL
   } else {
     const currency = accounts?.currency || 'CNY';
     const symbol = getSymbol(currency);
-    
+
     const formattedAbsAmount = formatAmount(Math.abs(amount), displaySettings);
     const sign = amount > 0 ? '+' : '-';
     displayAmount = `${sign}${symbol}${formattedAbsAmount}`;
@@ -118,7 +130,7 @@ export function TransactionItem({ transaction, isMergedTransfer, colors = DEFAUL
   return (
     <div
       className="group grid items-center py-3 px-6 border-b border-gray-50 hover:bg-blue-50/30 transition-colors text-sm"
-      style={{ gridTemplateColumns: '180px 100px 220px 80px minmax(200px, 1fr) 200px 40px' }}
+      style={{ gridTemplateColumns: '180px 100px 220px 80px minmax(200px, 1fr) 160px 80px' }}
     >
 
       {/* Col 1: Category (Icon + Name) */}
@@ -135,7 +147,7 @@ export function TransactionItem({ transaction, isMergedTransfer, colors = DEFAUL
       </div>
 
       {/* Col 3: Note (Description) */}
-      <div 
+      <div
         className="relative pl-0 pr-2 h-full flex items-center overflow-visible"
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
@@ -145,10 +157,10 @@ export function TransactionItem({ transaction, isMergedTransfer, colors = DEFAUL
           <span>{displayNote}</span>
           {shouldTruncate && <span className="text-gray-300 ml-px">...</span>}
         </div>
-        
+
         {/* Portal Tooltip */}
         {showTooltip && createPortal(
-          <div 
+          <div
             className="fixed z-[9999] bg-white border border-gray-200 shadow-xl rounded-md p-3 text-xs text-gray-600 break-words whitespace-normal font-medium"
             style={{
               top: tooltipPos.top + 4, // slight offset
@@ -173,13 +185,38 @@ export function TransactionItem({ transaction, isMergedTransfer, colors = DEFAUL
         {/* Future: Add balance snapshot here if available, e.g. <span className="text-xs text-gray-300 ml-1">(...)</span> */}
       </div>
 
-      {/* Col 6: Amount */}
+      {/* Col 6: Amount - Shifted Left */}
       <div className="text-right font-bold font-mono px-2" style={{ color: amountColor }}>
         {displayAmount}
       </div>
 
-      {/* Col 7: Spacer/Action */}
-      <div></div>
+      {/* Col 7: Actions - Hover-activated buttons */}
+      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity justify-end">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 w-8 p-0"
+          onClick={() => onEdit?.(transaction)}
+          title="编辑"
+        >
+          <Pencil size={15} className="text-gray-500" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 w-8 p-0"
+          onClick={() => onDelete?.(transaction)}
+          disabled={isDeleting}
+          title="删除"
+        >
+          {isDeleting ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Trash2 size={15} className="text-red-500" />
+          )}
+        </Button>
+      </div>
     </div>
   );
 }
+

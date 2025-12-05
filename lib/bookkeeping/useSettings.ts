@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { getBookkeepingSettings } from "./actions";
+import { useBookkeepingCache } from "./cache/BookkeepingCacheProvider";
 
 export interface BookkeepingSettings {
   decimalPlaces: number;
@@ -23,13 +23,15 @@ const DEFAULT_SETTINGS: BookkeepingSettings = {
 
 /**
  * 获取记账模块的全局设置
+ * ✅ 使用缓存
  */
 export function useBookkeepingSettings() {
+  const cache = useBookkeepingCache(); // ✅ 使用缓存
   const [settings, setSettings] = React.useState<BookkeepingSettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
-    getBookkeepingSettings()
+    cache.getBookkeepingSettings() // ✅ 从缓存获取
       .then((data) => {
         setSettings({
           decimalPlaces: data.decimal_places,
@@ -46,7 +48,7 @@ export function useBookkeepingSettings() {
       .finally(() => {
         setLoading(false);
       });
-  }, []);
+  }, [cache.getBookkeepingSettings]); // ✅ 稳定函数引用
 
   return { settings, loading };
 }

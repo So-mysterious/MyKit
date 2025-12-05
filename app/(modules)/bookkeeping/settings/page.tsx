@@ -7,20 +7,17 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
-  listTags,
   createTag,
   updateTag,
   deleteTag,
-  getBookkeepingSettings,
   updateBookkeepingColors,
   updateBookkeepingSettings,
   createManualSnapshotsForAllAccounts,
   getExportData,
-  getCurrencyRates,
   updateCurrencyRate,
-  getAccountsWithBalance,
   BookkeepingKind,
 } from "@/lib/bookkeeping/actions";
+import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 import ImportSection from "./components/ImportSection";
 import ExportSection from "./components/ExportSection";
 import { CurrencyRateRow } from "@/types/database";
@@ -71,6 +68,9 @@ const SNAPSHOT_CSV_HEADERS = [
 export default function SettingsPage() {
   const [loading, setLoading] = React.useState(true);
 
+  // 使用缓存Hook
+  const cache = useBookkeepingCache();
+
   // Settings State
   const [settings, setSettings] = React.useState<BookkeepingSettingsRow | null>(null);
   const [savingColor, setSavingColor] = React.useState(false);
@@ -116,10 +116,10 @@ export default function SettingsPage() {
     setLoading(true);
     try {
       const [settingsData, tagRows, ratesData, accountsData] = await Promise.all([
-        getBookkeepingSettings(),
-        listTags(),
-        getCurrencyRates(),
-        getAccountsWithBalance(),
+        cache.getBookkeepingSettings(),        // ✅ 使用缓存
+        cache.getAllTags(),                    // ✅ 使用缓存（所有标签）
+        cache.getCurrencyRates(),              // ✅ 使用缓存
+        cache.getAccounts({ includeBalance: true }), // ✅ 使用缓存
       ]);
       setSettings(settingsData);
       setTempColors({
@@ -143,7 +143,7 @@ export default function SettingsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [cache.getBookkeepingSettings, cache.getAllTags, cache.getCurrencyRates, cache.getAccounts]); // ✅ 只依赖稳定的函数
 
   React.useEffect(() => {
     fetchData();
@@ -163,8 +163,8 @@ export default function SettingsPage() {
     setSavingColor(true);
     try {
       await updateBookkeepingColors(tempColors);
+      await cache.invalidateAndRefresh(['bookkeepingSettings']); // ✅ 失效并刷新
       alert("颜色配置已保存");
-      await fetchData();
     } catch (error) {
       console.error(error);
       alert("保存失败");
@@ -177,8 +177,8 @@ export default function SettingsPage() {
     setSavingSettings(true);
     try {
       await updateBookkeepingSettings(tempSettings);
+      await cache.invalidateAndRefresh(['bookkeepingSettings']); // ✅ 失效并刷新
       alert("显示设置已保存");
-      await fetchData();
     } catch (error) {
       console.error(error);
       alert("保存失败");
@@ -202,7 +202,7 @@ export default function SettingsPage() {
         is_active: tagForm.is_active,
       });
       setTagForm(DEFAULT_TAG_FORM);
-      await fetchData();
+      await cache.invalidateAndRefresh(['allTags', 'tags']); // ✅ 两个都要失效
     } catch (error) {
       console.error(error);
       alert("新增标签失败");
@@ -215,7 +215,7 @@ export default function SettingsPage() {
     setUpdatingTagId(tag.id);
     try {
       await updateTag(tag.id, { is_active: !tag.is_active });
-      await fetchData();
+      await cache.invalidateAndRefresh(['allTags', 'tags']); // ✅ 两个都要失效
     } catch (error) {
       console.error(error);
       alert("更新标签状态失败");
@@ -229,7 +229,7 @@ export default function SettingsPage() {
     setDeletingTagId(tag.id);
     try {
       await deleteTag(tag.id);
-      await fetchData();
+      await cache.invalidateAndRefresh(['allTags', 'tags']); // ✅ 两个都要失效
     } catch (error) {
       console.error(error);
       alert("删除标签失败");
@@ -303,7 +303,7 @@ export default function SettingsPage() {
     setSavingRate(key);
     try {
       await updateCurrencyRate(from, to, rate);
-      await fetchData();
+      await cache.invalidateAndRefresh(['currencyRates']); // ✅ 失效并刷新
     } catch (error) {
       console.error(error);
       alert("更新汇率失败");

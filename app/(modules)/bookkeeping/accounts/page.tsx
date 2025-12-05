@@ -15,7 +15,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { getAccountsWithBalance, deleteAccount } from "@/lib/bookkeeping/actions";
+import { deleteAccount } from "@/lib/bookkeeping/actions";
+import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 import { AccountType, Currency } from "@/lib/constants";
 
 interface AccountWithBalance {
@@ -32,13 +33,16 @@ export default function AccountsPage() {
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
 
+  // 使用缓存Hook
+  const cache = useBookkeepingCache();
+
   const fetchAccounts = React.useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
-    
+
     try {
-      // Add timestamp to prevent caching if necessary, though actions.ts logic is fresh
-      const data = await getAccountsWithBalance();
+      // 使用缓存获取账户数据
+      const data = await cache.getAccounts({ includeBalance: true });
       setAccounts(data as unknown as AccountWithBalance[]);
     } catch (error) {
       console.error("Failed to fetch accounts:", error);
@@ -47,7 +51,7 @@ export default function AccountsPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [cache.getAccounts]); // ✅ 只依赖稳定的getAccounts函数
 
   React.useEffect(() => {
     fetchAccounts();
@@ -57,11 +61,30 @@ export default function AccountsPage() {
     if (confirm(`确定要删除账户 "${name}" 吗？所有的流水记录也会被删除！`)) {
       try {
         await deleteAccount(id);
-        fetchAccounts(); // Refresh
+        // 删除后失效缓存并刷新
+        await cache.invalidateAndRefresh(['accounts']);
+        await fetchAccounts();
       } catch (error) {
         alert("删除失败");
       }
     }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      // 强制刷新：失效缓存并重新加载
+      await cache.invalidateAndRefresh(['accounts']);
+      await fetchAccounts();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleSuccess = async () => {
+    // CRUD操作成功后：失效缓存并刷新
+    await cache.invalidateAndRefresh(['accounts']);
+    await fetchAccounts();
   };
 
   return (
@@ -73,10 +96,10 @@ export default function AccountsPage() {
             <h1 className="text-2xl font-bold tracking-tight">账户管理</h1>
             <p className="text-sm text-gray-500">管理你的银行卡、信用卡、电子钱包等账户。</p>
           </div>
-          <Button 
-            variant="ghost" 
-            size="icon" 
-            onClick={() => fetchAccounts(true)} 
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleRefresh}
             disabled={refreshing}
             className={refreshing ? "animate-spin" : ""}
             title="强制刷新余额"
@@ -85,7 +108,7 @@ export default function AccountsPage() {
           </Button>
         </div>
         <div className="flex gap-2">
-          <AccountModal onSuccess={() => fetchAccounts(true)} />
+          <AccountModal onSuccess={handleSuccess} />
         </div>
       </div>
 
@@ -96,9 +119,9 @@ export default function AccountsPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {accounts.length === 0 ? (
-             <div className="col-span-full text-center p-8 border border-dashed rounded-lg text-gray-500">
-                暂无账户，请点击右上角新建。
-             </div>
+            <div className="col-span-full text-center p-8 border border-dashed rounded-lg text-gray-500">
+              暂无账户，请点击右上角新建。
+            </div>
           ) : (
             accounts.map((account) => (
               <div key={account.id} className="relative group h-full">
@@ -108,23 +131,23 @@ export default function AccountsPage() {
                   currency={account.currency}
                   balance={account.balance}
                 />
-                
+
                 {/* Actions Row */}
                 <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                   <SnapshotDialog 
-                      accountName={account.name}
-                      accountId={account.id} 
-                      currency={account.currency}
-                      currentEstimatedBalance={account.balance}
-                      trigger={
-                        <Button size="sm" variant="secondary" className="h-8 px-2 bg-white/90 backdrop-blur hover:bg-white shadow-sm text-xs">
-                          校准
-                        </Button>
-                      }
-                      onSuccess={() => fetchAccounts(true)}
-                   />
-                   
-                   <DropdownMenu>
+                  <SnapshotDialog
+                    accountName={account.name}
+                    accountId={account.id}
+                    currency={account.currency}
+                    currentEstimatedBalance={account.balance}
+                    trigger={
+                      <Button size="sm" variant="secondary" className="h-8 px-2 bg-white/90 backdrop-blur hover:bg-white shadow-sm text-xs">
+                        校准
+                      </Button>
+                    }
+                    onSuccess={handleSuccess}
+                  />
+
+                  <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button size="sm" variant="secondary" className="h-8 w-8 p-0 bg-white/90 backdrop-blur hover:bg-white shadow-sm">
                         <MoreVertical size={14} />
@@ -133,22 +156,22 @@ export default function AccountsPage() {
                     <DropdownMenuContent align="end">
                       <DropdownMenuLabel>账户操作</DropdownMenuLabel>
                       <DropdownMenuSeparator />
-                      <AccountModal 
-                        mode="edit" 
+                      <AccountModal
+                        mode="edit"
                         initialData={{
-                            id: account.id,
-                            name: account.name,
-                            type: account.type as AccountType,
-                            currency: account.currency as Currency
-                        }} 
-                        onSuccess={() => fetchAccounts(true)}
+                          id: account.id,
+                          name: account.name,
+                          type: account.type as AccountType,
+                          currency: account.currency as Currency
+                        }}
+                        onSuccess={handleSuccess}
                         trigger={
                           <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
                             <Edit className="mr-2 h-4 w-4" /> 编辑信息
                           </DropdownMenuItem>
                         }
                       />
-                      <DropdownMenuItem 
+                      <DropdownMenuItem
                         className="text-red-600 focus:text-red-600"
                         onClick={() => handleDelete(account.id, account.name)}
                       >
@@ -164,7 +187,7 @@ export default function AccountsPage() {
       )}
 
       <div className="fixed bottom-8 right-8">
-        <TransactionModal accounts={accounts} onSuccess={() => fetchAccounts(true)} />
+        <TransactionModal accounts={accounts} onSuccess={handleSuccess} />
       </div>
     </div>
   );

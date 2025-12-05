@@ -5,7 +5,7 @@ import { format, eachDayOfInterval, eachWeekOfInterval, eachMonthOfInterval, isS
 import { zhCN } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight } from "lucide-react";
-import { getBookkeepingSettings } from "@/lib/bookkeeping/actions";
+import { useBookkeepingColors } from "@/lib/bookkeeping/useColors";
 
 interface TransactionExplorerProps {
     transactions: any[];
@@ -27,21 +27,7 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
     const [granularity, setGranularity] = React.useState<Granularity>('day');
     const [timeRange, setTimeRange] = React.useState<TimeRange>('30d');
     const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null);
-    const [colors, setColors] = React.useState({
-        expense: '#ef4444',
-        income: '#22c55e',
-        transfer: '#0ea5e9'
-    });
-
-    React.useEffect(() => {
-        getBookkeepingSettings().then(settings => {
-            setColors({
-                expense: settings.expense_color,
-                income: settings.income_color,
-                transfer: settings.transfer_color
-            });
-        });
-    }, []);
+    const { colors } = useBookkeepingColors(); // ✅ 使用缓存Hook
 
     // 根据时间范围过滤交易
     const filteredTransactions = React.useMemo(() => {

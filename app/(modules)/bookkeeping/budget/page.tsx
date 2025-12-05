@@ -22,17 +22,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  getBudgetPlans,
   createBudgetPlan,
   updateBudgetPlan,
   deleteBudgetPlan,
   toggleBudgetPlanStatus,
   restartBudgetPlan,
-  getTotalBudgetPlan,
-  getAccountsMeta,
-  getAvailableTags,
   BudgetPlanWithRecords,
 } from "@/lib/bookkeeping/actions";
+import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 import { useBookkeepingColors } from "@/lib/bookkeeping/useColors";
 
 // 周期选项
@@ -76,13 +73,16 @@ const initialFormState: FormState = {
 
 export default function BudgetPage() {
   const { colors } = useBookkeepingColors();
-  
+
+  // 使用缓存Hook
+  const cache = useBookkeepingCache();
+
   // 数据状态
   const [plans, setPlans] = React.useState<BudgetPlanWithRecords[]>([]);
   const [totalPlan, setTotalPlan] = React.useState<BudgetPlanWithRecords | null>(null);
   const [accounts, setAccounts] = React.useState<{ id: string; name: string; currency: string }[]>([]);
   const [tags, setTags] = React.useState<{ kind: string; name: string }[]>([]);
-  
+
   // UI 状态
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -91,27 +91,29 @@ export default function BudgetPage() {
   const [expandedPlanId, setExpandedPlanId] = React.useState<string | null>(null);
   const [form, setForm] = React.useState<FormState>(initialFormState);
   const [error, setError] = React.useState<string | null>(null);
-  
+
   // 获取支出和划转标签
   const expenseAndTransferTags = React.useMemo(() => {
     return tags.filter(t => t.kind === "expense" || t.kind === "transfer");
   }, [tags]);
-  
-  // 加载数据
+
+  // 加载数据 (使用缓存)
   const loadData = React.useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [plansData, totalData, accountsData, tagsData] = await Promise.all([
-        getBudgetPlans(),
-        getTotalBudgetPlan(),
-        getAccountsMeta(),
-        getAvailableTags(),
+      const [plansData, accountsData, tagsData] = await Promise.all([
+        cache.getBudgetPlans({ includeRecords: true }), // ✅ 使用缓存
+        cache.getAccounts({ includeBalance: false }), // ✅ 使用缓存
+        cache.getTags(), // ✅ 使用缓存
       ]);
-      
+
       // 分离标签计划和总支出计划
-      setPlans(plansData.filter(p => p.plan_type === "category"));
-      setTotalPlan(totalData);
+      const categoryPlans = plansData.filter(p => p.plan_type === "category");
+      const totalPlanData = plansData.find(p => p.plan_type === "total") || null;
+
+      setPlans(categoryPlans);
+      setTotalPlan(totalPlanData);
       setAccounts(accountsData);
       setTags(tagsData);
     } catch (err) {
@@ -120,12 +122,12 @@ export default function BudgetPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
-  
+  }, [cache.getBudgetPlans, cache.getAccounts, cache.getTags]); // ✅ 只依赖稳定的函数
+
   React.useEffect(() => {
     loadData();
   }, [loadData]);
-  
+
   // 重置表单
   const resetForm = () => {
     setForm(initialFormState);
@@ -133,7 +135,7 @@ export default function BudgetPage() {
     setShowNewCategoryForm(false);
     setError(null);
   };
-  
+
   // 开始编辑
   const startEdit = (plan: BudgetPlanWithRecords) => {
     setEditingPlanId(plan.id);
@@ -152,7 +154,7 @@ export default function BudgetPage() {
     });
     setError(null);
   };
-  
+
   // 开始新建标签预算
   const startNewCategory = () => {
     setEditingPlanId(null);
@@ -160,7 +162,7 @@ export default function BudgetPage() {
     setShowNewCategoryForm(true);
     setError(null);
   };
-  
+
   // 开始新建总支出预算
   const startNewTotal = () => {
     setEditingPlanId("new-total"); // 特殊标记
@@ -168,7 +170,7 @@ export default function BudgetPage() {
     setForm({ ...initialFormState, planType: "total" });
     setError(null);
   };
-  
+
   // 保存计划
   const handleSave = async () => {
     if (form.planType === "category" && !form.categoryName) {
@@ -179,13 +181,13 @@ export default function BudgetPage() {
       setError("请输入有效的刚性约束金额");
       return;
     }
-    
+
     setSaving(true);
     setError(null);
-    
+
     try {
       const isNewPlan = editingPlanId === "new-total" || showNewCategoryForm;
-      
+
       if (!isNewPlan && editingPlanId) {
         // 更新计划
         await updateBudgetPlan(editingPlanId, {
@@ -206,13 +208,13 @@ export default function BudgetPage() {
           soft_limit_enabled: form.softLimitEnabled,
           account_filter_mode: form.accountFilterMode,
           account_filter_ids: form.accountFilterIds.length > 0 ? form.accountFilterIds : undefined,
-          included_categories: form.planType === "total" && form.includedCategories.length > 0 
-            ? form.includedCategories 
+          included_categories: form.planType === "total" && form.includedCategories.length > 0
+            ? form.includedCategories
             : undefined,
           start_date: form.startDate,
         });
       }
-      
+
       resetForm();
       await loadData();
     } catch (err) {
@@ -222,7 +224,7 @@ export default function BudgetPage() {
       setSaving(false);
     }
   };
-  
+
   // 切换计划状态
   const handleToggleStatus = async (plan: BudgetPlanWithRecords) => {
     try {
@@ -234,7 +236,7 @@ export default function BudgetPage() {
       setError(err instanceof Error ? err.message : "操作失败");
     }
   };
-  
+
   // 再启动计划
   const handleRestart = async (plan: BudgetPlanWithRecords) => {
     try {
@@ -245,11 +247,11 @@ export default function BudgetPage() {
       setError(err instanceof Error ? err.message : "再启动失败");
     }
   };
-  
+
   // 删除计划
   const handleDelete = async (planId: string) => {
     if (!confirm("确定要删除这个预算计划吗？")) return;
-    
+
     try {
       await deleteBudgetPlan(planId);
       await loadData();
@@ -258,16 +260,16 @@ export default function BudgetPage() {
       setError(err instanceof Error ? err.message : "删除失败");
     }
   };
-  
+
   // 获取账户名称
   const getAccountName = (accountId: string) => {
     const account = accounts.find(a => a.id === accountId);
     return account ? `${account.name} (${account.currency})` : accountId;
   };
-  
+
   // 统一的选择框样式（与 Input 等高）
   const selectClassName = "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50";
-  
+
   // 渲染编辑表单（内联）
   const renderEditForm = (isTotal: boolean, isNew: boolean) => (
     <div className="bg-white rounded-lg border border-gray-200 p-5 space-y-4">
@@ -279,7 +281,7 @@ export default function BudgetPage() {
           <X className="w-4 h-4" />
         </Button>
       </div>
-      
+
       {/* 标签选择（仅标签预算新建时） */}
       {!isTotal && isNew && (
         <div className="space-y-2">
@@ -298,7 +300,7 @@ export default function BudgetPage() {
           </select>
         </div>
       )}
-      
+
       {/* 编辑时显示标签名称（只读） */}
       {!isTotal && !isNew && (
         <div className="space-y-2">
@@ -308,7 +310,7 @@ export default function BudgetPage() {
           </div>
         </div>
       )}
-      
+
       {/* 周期和开始日期（仅新建时） */}
       {isNew && (
         <div className="grid grid-cols-2 gap-4">
@@ -326,7 +328,7 @@ export default function BudgetPage() {
               ))}
             </select>
           </div>
-          
+
           <div className="space-y-2">
             <Label>开始日期</Label>
             <Input
@@ -337,7 +339,7 @@ export default function BudgetPage() {
           </div>
         </div>
       )}
-      
+
       {/* 刚性约束金额和币种 */}
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
@@ -349,7 +351,7 @@ export default function BudgetPage() {
             onChange={(e) => setForm({ ...form, hardLimit: e.target.value })}
           />
         </div>
-        
+
         <div className="space-y-2">
           <Label>约束币种</Label>
           {!isNew ? (
@@ -371,7 +373,7 @@ export default function BudgetPage() {
           )}
         </div>
       </div>
-      
+
       {/* 柔性约束开关 */}
       <div className="flex items-center justify-between py-2">
         <div>
@@ -383,26 +385,24 @@ export default function BudgetPage() {
           role="switch"
           aria-checked={form.softLimitEnabled}
           onClick={() => setForm({ ...form, softLimitEnabled: !form.softLimitEnabled })}
-          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
-            form.softLimitEnabled ? "bg-green-500" : "bg-gray-300"
-          }`}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${form.softLimitEnabled ? "bg-green-500" : "bg-gray-300"
+            }`}
         >
           <span
-            className={`pointer-events-none block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 ${
-              form.softLimitEnabled ? "translate-x-5" : "translate-x-0"
-            }`}
+            className={`pointer-events-none block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 ${form.softLimitEnabled ? "translate-x-5" : "translate-x-0"
+              }`}
           />
         </button>
       </div>
-      
+
       {/* 账户筛选 */}
       <div className="space-y-2">
         <Label>监控账户范围</Label>
         <select
           className={selectClassName}
           value={form.accountFilterMode}
-          onChange={(e) => setForm({ 
-            ...form, 
+          onChange={(e) => setForm({
+            ...form,
             accountFilterMode: e.target.value as "all" | "include" | "exclude",
             accountFilterIds: [],
           })}
@@ -413,17 +413,16 @@ export default function BudgetPage() {
             </option>
           ))}
         </select>
-        
+
         {form.accountFilterMode !== "all" && (
           <div className="flex flex-wrap gap-2 mt-3">
             {accounts.map((acc) => (
               <label
                 key={acc.id}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer text-sm transition-colors ${
-                  form.accountFilterIds.includes(acc.id)
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-gray-200 hover:border-gray-300 text-gray-700"
-                }`}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer text-sm transition-colors ${form.accountFilterIds.includes(acc.id)
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-gray-200 hover:border-gray-300 text-gray-700"
+                  }`}
               >
                 <input
                   type="checkbox"
@@ -444,7 +443,7 @@ export default function BudgetPage() {
           </div>
         )}
       </div>
-      
+
       {/* 总支出计划的纳入标签选择 */}
       {isTotal && (
         <div className="space-y-2">
@@ -454,11 +453,10 @@ export default function BudgetPage() {
             {expenseAndTransferTags.map((tag) => (
               <label
                 key={tag.name}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer text-sm transition-colors ${
-                  form.includedCategories.includes(tag.name)
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-gray-200 hover:border-gray-300 text-gray-700"
-                }`}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer text-sm transition-colors ${form.includedCategories.includes(tag.name)
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-gray-200 hover:border-gray-300 text-gray-700"
+                  }`}
               >
                 <input
                   type="checkbox"
@@ -478,14 +476,14 @@ export default function BudgetPage() {
           </div>
         </div>
       )}
-      
+
       {/* 错误提示 */}
       {error && (
         <div className="text-sm text-red-500 bg-red-50 px-3 py-2 rounded-md">
           {error}
         </div>
       )}
-      
+
       {/* 操作按钮 */}
       <div className="flex items-center justify-end gap-3 pt-2">
         <Button variant="ghost" onClick={resetForm}>
@@ -508,17 +506,17 @@ export default function BudgetPage() {
       </div>
     </div>
   );
-  
+
   // 渲染计划卡片（显示模式）
   const renderPlanCardDisplay = (plan: BudgetPlanWithRecords) => {
     const isExpanded = expandedPlanId === plan.id;
-    
+
     const statusBadge = {
       active: { label: "进行中", className: "bg-green-100 text-green-700" },
       paused: { label: "已暂停", className: "bg-gray-100 text-gray-600" },
       expired: { label: "已过期", className: "bg-amber-100 text-amber-700" },
     }[plan.status];
-    
+
     return (
       <div className="bg-white rounded-lg border border-gray-100 overflow-hidden">
         {/* 卡片头部 */}
@@ -540,7 +538,7 @@ export default function BudgetPage() {
                 {plan.period === "weekly" ? "周度" : "月度"}
               </span>
             </div>
-            
+
             <div className="flex items-center gap-1">
               {plan.status === "expired" ? (
                 <>
@@ -598,7 +596,7 @@ export default function BudgetPage() {
               )}
             </div>
           </div>
-          
+
           {/* 简要信息 */}
           <div className="mt-2 text-sm text-gray-500">
             刚性约束: {plan.limit_currency} {plan.hard_limit.toLocaleString()}
@@ -609,7 +607,7 @@ export default function BudgetPage() {
             {" · "}第 {plan.round_number} 轮
           </div>
         </div>
-        
+
         {/* 展开详情 */}
         <button
           className="w-full px-4 py-2 text-sm text-gray-500 hover:bg-gray-50 flex items-center justify-center gap-1 border-t border-gray-50"
@@ -627,7 +625,7 @@ export default function BudgetPage() {
             </>
           )}
         </button>
-        
+
         {/* 详情面板 */}
         {isExpanded && (
           <div className="px-4 pb-4 space-y-3 border-t border-gray-50">
@@ -650,8 +648,8 @@ export default function BudgetPage() {
                   {plan.account_filter_mode === "all"
                     ? "全部账户"
                     : plan.account_filter_mode === "include"
-                    ? "仅包含指定账户"
-                    : "排除指定账户"}
+                      ? "仅包含指定账户"
+                      : "排除指定账户"}
                 </span>
               </div>
               <div>
@@ -661,7 +659,7 @@ export default function BudgetPage() {
                 </span>
               </div>
             </div>
-            
+
             {/* 账户筛选详情 */}
             {plan.account_filter_mode !== "all" && plan.account_filter_ids && plan.account_filter_ids.length > 0 && (
               <div className="text-sm">
@@ -680,7 +678,7 @@ export default function BudgetPage() {
                 </div>
               </div>
             )}
-            
+
             {/* 总支出计划的纳入标签 */}
             {plan.plan_type === "total" && (
               <div className="text-sm">
@@ -706,11 +704,11 @@ export default function BudgetPage() {
       </div>
     );
   };
-  
+
   // 渲染计划卡片（根据状态决定显示模式还是编辑模式）
   const renderPlanCard = (plan: BudgetPlanWithRecords) => {
     const isEditing = editingPlanId === plan.id;
-    
+
     if (isEditing) {
       return (
         <div key={plan.id}>
@@ -718,14 +716,14 @@ export default function BudgetPage() {
         </div>
       );
     }
-    
+
     return (
       <div key={plan.id}>
         {renderPlanCardDisplay(plan)}
       </div>
     );
   };
-  
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -733,10 +731,10 @@ export default function BudgetPage() {
       </div>
     );
   }
-  
+
   // 判断是否正在新建总支出预算
   const isCreatingTotal = editingPlanId === "new-total";
-  
+
   return (
     <div className="space-y-6">
       {/* 页面标题 */}
@@ -749,14 +747,14 @@ export default function BudgetPage() {
           设置和管理各类支出预算计划。预算执行情况请在仪表盘查看。
         </p>
       </div>
-      
+
       {/* 全局错误提示 */}
       {error && !editingPlanId && !showNewCategoryForm && (
         <div className="text-sm text-red-500 bg-red-50 px-4 py-3 rounded-lg">
           {error}
         </div>
       )}
-      
+
       {/* 总支出预算 */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
@@ -771,13 +769,13 @@ export default function BudgetPage() {
             </Button>
           )}
         </div>
-        
+
         {/* 新建总支出预算表单 */}
         {isCreatingTotal && renderEditForm(true, true)}
-        
+
         {/* 已有的总支出预算 */}
         {totalPlan && !isCreatingTotal && renderPlanCard(totalPlan)}
-        
+
         {/* 空状态 */}
         {!totalPlan && !isCreatingTotal && (
           <div className="text-sm text-gray-500 bg-gray-50 rounded-lg p-4 text-center">
@@ -785,7 +783,7 @@ export default function BudgetPage() {
           </div>
         )}
       </div>
-      
+
       {/* 标签预算列表 */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
@@ -800,10 +798,10 @@ export default function BudgetPage() {
             </Button>
           )}
         </div>
-        
+
         {/* 新建标签预算表单（在列表顶部） */}
         {showNewCategoryForm && renderEditForm(false, true)}
-        
+
         {/* 标签预算列表 */}
         {plans.length > 0 ? (
           <div className="space-y-3">

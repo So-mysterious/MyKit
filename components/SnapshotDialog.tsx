@@ -35,27 +35,27 @@ export function SnapshotDialog({ accountId, accountName, currentEstimatedBalance
   const [actualBalance, setActualBalance] = React.useState("");
   const [date, setDate] = React.useState(defaultDate || new Date().toISOString().split('T')[0]);
   const [submitting, setSubmitting] = React.useState(false);
-  
+
   // System calculation state
-  const [systemBalance, setSystemBalance] = React.useState(currentEstimatedBalance);
+  const [systemBalance, setSystemBalance] = React.useState(currentEstimatedBalance || 0); // ✅ 默认0防止undefined
   const [isCalculating, setIsCalculating] = React.useState(false);
-  
+
   const [diff, setDiff] = React.useState<number | null>(null);
 
   // Re-calculate when date changes using REAL logic
   React.useEffect(() => {
     if (!open) return;
-    
+
     const fetchBalance = async () => {
-        setIsCalculating(true);
-        try {
-            const bal = await calculateBalance(supabase, accountId, new Date(date));
-            setSystemBalance(bal);
-        } catch (e) {
-            console.error(e);
-        } finally {
-            setIsCalculating(false);
-        }
+      setIsCalculating(true);
+      try {
+        const bal = await calculateBalance(supabase, accountId, new Date(date));
+        setSystemBalance(bal || 0); // ✅ 防止undefined
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setIsCalculating(false);
+      }
     };
 
     // Debounce slightly
@@ -68,7 +68,7 @@ export function SnapshotDialog({ accountId, accountName, currentEstimatedBalance
     if (actualBalance && !isCalculating) {
       const val = parseFloat(actualBalance);
       if (!isNaN(val)) {
-        setDiff(val - systemBalance);
+        setDiff(val - (systemBalance || 0)); // ✅ 防止undefined
       } else {
         setDiff(null);
       }
@@ -81,26 +81,26 @@ export function SnapshotDialog({ accountId, accountName, currentEstimatedBalance
     e.preventDefault();
     setSubmitting(true);
     try {
-        await createSnapshot({
-            account_id: accountId,
-            balance: parseFloat(actualBalance),
-            date: new Date(date).toISOString()
+      await createSnapshot({
+        account_id: accountId,
+        balance: parseFloat(actualBalance),
+        date: new Date(date).toISOString()
+      });
+
+      const shouldLogIssue = diff !== null && Math.abs(diff) > 0.01;
+
+      if (shouldLogIssue) {
+        await runReconciliationCheck({
+          accountId,
+          source: 'snapshot'
         });
-
-        const shouldLogIssue = diff !== null && Math.abs(diff) > 0.01;
-
-        if (shouldLogIssue) {
-            await runReconciliationCheck({
-                accountId,
-                source: 'snapshot'
-            });
-        }
-        setOpen(false);
-        onSuccess?.();
+      }
+      setOpen(false);
+      onSuccess?.();
     } catch (error) {
-        alert("校准失败");
+      alert("校准失败");
     } finally {
-        setSubmitting(false);
+      setSubmitting(false);
     }
   };
 
@@ -116,10 +116,10 @@ export function SnapshotDialog({ accountId, accountName, currentEstimatedBalance
             输入该日期的实际余额。系统仅校验此前流水的连贯性。
           </DialogDescription>
         </DialogHeader>
-        
+
         <form onSubmit={handleSubmit} className="space-y-6 py-4">
-          
-           <div className="space-y-2">
+
+          <div className="space-y-2">
             <Label htmlFor="date">校准日期</Label>
             <div className="relative">
               <Input
@@ -141,7 +141,7 @@ export function SnapshotDialog({ accountId, accountName, currentEstimatedBalance
                 <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
               ) : (
                 <span className="font-mono font-semibold animate-in fade-in">
-                  {systemBalance.toFixed(2)} {currency}
+                  {(systemBalance || 0).toFixed(2)} {currency}
                 </span>
               )}
             </div>
@@ -153,7 +153,7 @@ export function SnapshotDialog({ accountId, accountName, currentEstimatedBalance
                   id="actual"
                   type="number"
                   step="0.01"
-                  placeholder={systemBalance.toString()}
+                  placeholder={(systemBalance || 0).toString()}
                   value={actualBalance}
                   onChange={(e) => setActualBalance(e.target.value)}
                   className="pl-8 font-bold"

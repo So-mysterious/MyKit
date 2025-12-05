@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { getBookkeepingSettings } from "./actions";
+import { useBookkeepingCache } from "./cache/BookkeepingCacheProvider";
 
 export interface BookkeepingColors {
   expense: string;
@@ -18,13 +18,15 @@ const DEFAULT_COLORS: BookkeepingColors = {
 /**
  * 获取记账模块的全局颜色配置
  * 用于统一管理收入、支出、划转的颜色
+ * ✅ 使用缓存
  */
 export function useBookkeepingColors() {
+  const cache = useBookkeepingCache(); // ✅ 使用缓存
   const [colors, setColors] = React.useState<BookkeepingColors>(DEFAULT_COLORS);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
-    getBookkeepingSettings()
+    cache.getBookkeepingSettings() // ✅ 从缓存获取
       .then((settings) => {
         setColors({
           expense: settings.expense_color,
@@ -38,7 +40,7 @@ export function useBookkeepingColors() {
       .finally(() => {
         setLoading(false);
       });
-  }, []);
+  }, [cache.getBookkeepingSettings]); // ✅ 稳定函数引用
 
   return { colors, loading };
 }

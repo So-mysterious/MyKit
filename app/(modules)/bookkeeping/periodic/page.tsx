@@ -21,15 +21,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  getPeriodicTasks,
   createPeriodicTask,
   updatePeriodicTask,
   deletePeriodicTask,
   togglePeriodicTaskActive,
-  getAccountsMeta,
-  getAvailableTags,
   PeriodicTaskWithAccount,
 } from "@/lib/bookkeeping/actions";
+import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 import { useBookkeepingColors } from "@/lib/bookkeeping/useColors";
 
 type TransactionType = "expense" | "income" | "transfer";
@@ -146,6 +144,9 @@ export default function PeriodicTasksPage() {
   // 全局颜色配置
   const { colors } = useBookkeepingColors();
 
+  // 使用缓存Hook
+  const cache = useBookkeepingCache();
+
   // Form State
   const [showForm, setShowForm] = React.useState(false);
   const [form, setForm] = React.useState<FormState>(DEFAULT_FORM);
@@ -163,9 +164,9 @@ export default function PeriodicTasksPage() {
     setLoading(true);
     try {
       const [taskData, accountData, tagData] = await Promise.all([
-        getPeriodicTasks(),
-        getAccountsMeta(),
-        getAvailableTags(),
+        cache.getPeriodicTasks(), // ✅ 使用缓存
+        cache.getAccounts({ includeBalance: false }), // 使用缓存
+        cache.getTags(), // 使用缓存
       ]);
       setTasks(taskData);
       setAccounts(accountData);
@@ -182,7 +183,7 @@ export default function PeriodicTasksPage() {
     } finally {
       setLoading(false);
     }
-  }, [form.accountId]);
+  }, [cache.getPeriodicTasks, cache.getAccounts, cache.getTags, form.accountId]); // ✅ 只依赖稳定的函数和formAccountId
 
   React.useEffect(() => {
     fetchData();
@@ -350,7 +351,7 @@ export default function PeriodicTasksPage() {
   const startEdit = (task: PeriodicTaskWithAccount) => {
     // 使用 task.type 字段，兼容旧数据
     const taskType = task.type || (task.amount < 0 ? "expense" : "income");
-    
+
     // 解析 frequency（可能是 custom_30 格式）
     let frequency = task.frequency;
     let customDays = "30";
@@ -471,33 +472,30 @@ export default function PeriodicTasksPage() {
             <button
               type="button"
               onClick={() => handleFormChange("type", "expense")}
-              className={`text-sm font-medium py-1.5 rounded-md transition-all ${
-                form.type === "expense"
-                  ? "bg-white shadow-sm text-red-600"
-                  : "text-gray-500 hover:text-gray-900"
-              }`}
+              className={`text-sm font-medium py-1.5 rounded-md transition-all ${form.type === "expense"
+                ? "bg-white shadow-sm text-red-600"
+                : "text-gray-500 hover:text-gray-900"
+                }`}
             >
               支出
             </button>
             <button
               type="button"
               onClick={() => handleFormChange("type", "income")}
-              className={`text-sm font-medium py-1.5 rounded-md transition-all ${
-                form.type === "income"
-                  ? "bg-white shadow-sm text-green-600"
-                  : "text-gray-500 hover:text-gray-900"
-              }`}
+              className={`text-sm font-medium py-1.5 rounded-md transition-all ${form.type === "income"
+                ? "bg-white shadow-sm text-green-600"
+                : "text-gray-500 hover:text-gray-900"
+                }`}
             >
               收入
             </button>
             <button
               type="button"
               onClick={() => handleFormChange("type", "transfer")}
-              className={`text-sm font-medium py-1.5 rounded-md transition-all ${
-                form.type === "transfer"
-                  ? "bg-white shadow-sm text-blue-600"
-                  : "text-gray-500 hover:text-gray-900"
-              }`}
+              className={`text-sm font-medium py-1.5 rounded-md transition-all ${form.type === "transfer"
+                ? "bg-white shadow-sm text-blue-600"
+                : "text-gray-500 hover:text-gray-900"
+                }`}
             >
               划转
             </button>
@@ -716,33 +714,30 @@ export default function PeriodicTasksPage() {
                     <button
                       type="button"
                       onClick={() => handleEditFormChange("type", "expense")}
-                      className={`text-sm font-medium py-1.5 rounded-md transition-all ${
-                        editForm.type === "expense"
-                          ? "bg-white shadow-sm text-red-600"
-                          : "text-gray-500 hover:text-gray-900"
-                      }`}
+                      className={`text-sm font-medium py-1.5 rounded-md transition-all ${editForm.type === "expense"
+                        ? "bg-white shadow-sm text-red-600"
+                        : "text-gray-500 hover:text-gray-900"
+                        }`}
                     >
                       支出
                     </button>
                     <button
                       type="button"
                       onClick={() => handleEditFormChange("type", "income")}
-                      className={`text-sm font-medium py-1.5 rounded-md transition-all ${
-                        editForm.type === "income"
-                          ? "bg-white shadow-sm text-green-600"
-                          : "text-gray-500 hover:text-gray-900"
-                      }`}
+                      className={`text-sm font-medium py-1.5 rounded-md transition-all ${editForm.type === "income"
+                        ? "bg-white shadow-sm text-green-600"
+                        : "text-gray-500 hover:text-gray-900"
+                        }`}
                     >
                       收入
                     </button>
                     <button
                       type="button"
                       onClick={() => handleEditFormChange("type", "transfer")}
-                      className={`text-sm font-medium py-1.5 rounded-md transition-all ${
-                        editForm.type === "transfer"
-                          ? "bg-white shadow-sm text-blue-600"
-                          : "text-gray-500 hover:text-gray-900"
-                      }`}
+                      className={`text-sm font-medium py-1.5 rounded-md transition-all ${editForm.type === "transfer"
+                        ? "bg-white shadow-sm text-blue-600"
+                        : "text-gray-500 hover:text-gray-900"
+                        }`}
                     >
                       划转
                     </button>
@@ -921,9 +916,8 @@ export default function PeriodicTasksPage() {
             return (
               <div
                 key={task.id}
-                className={`group flex items-center gap-4 py-4 px-1 border-b border-gray-100 last:border-b-0 transition-colors hover:bg-gray-50/50 ${
-                  !task.is_active ? "opacity-50" : ""
-                }`}
+                className={`group flex items-center gap-4 py-4 px-1 border-b border-gray-100 last:border-b-0 transition-colors hover:bg-gray-50/50 ${!task.is_active ? "opacity-50" : ""
+                  }`}
               >
                 {/* Icon */}
                 <div

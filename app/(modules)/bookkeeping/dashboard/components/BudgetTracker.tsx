@@ -3,9 +3,10 @@
 import * as React from "react";
 import { Wallet, TrendingDown, Star, Circle, ChevronRight } from "lucide-react";
 import Link from "next/link";
-import { getDashboardBudgetData, updateBudgetPeriodRecord } from "@/lib/bookkeeping/actions";
+import { updateBudgetPeriodRecord } from "@/lib/bookkeeping/actions";
 import { BudgetPlanRow, BudgetPeriodRecordRow } from "@/types/database";
 import { useBookkeepingColors } from "@/lib/bookkeeping/useColors";
+import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 
 interface BudgetPlanData {
   plan: BudgetPlanRow;
@@ -15,36 +16,24 @@ interface BudgetPlanData {
 
 export function BudgetTracker() {
   const { colors } = useBookkeepingColors();
+  const cache = useBookkeepingCache(); // ✅ 使用缓存
   const [loading, setLoading] = React.useState(true);
   const [plans, setPlans] = React.useState<BudgetPlanData[]>([]);
 
-  // 加载数据
+  // 加载数据 - 只从缓存获取，不强制更新
   const loadData = React.useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getDashboardBudgetData();
+      // ✅ 只获取缓存数据，不更新period records
+      // period records的actual_amount会由Dashboard的每日打卡更新
+      const data = await cache.getDashboardBudgetData();
       setPlans(data.plans);
-      
-      // 更新当前周期的数据
-      for (const planData of data.plans) {
-        if (planData.currentPeriod && planData.plan.status === "active") {
-          try {
-            await updateBudgetPeriodRecord(planData.currentPeriod.id);
-          } catch (err) {
-            console.error("Failed to update period record:", err);
-          }
-        }
-      }
-      
-      // 重新加载更新后的数据
-      const updatedData = await getDashboardBudgetData();
-      setPlans(updatedData.plans);
     } catch (err) {
       console.error("Failed to load budget data:", err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [cache.getDashboardBudgetData]); // ✅ 只依赖稳定函数
 
   React.useEffect(() => {
     loadData();

@@ -42,11 +42,11 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
     // 根据时间范围过滤交易
     const filteredTransactions = React.useMemo(() => {
         if (timeRange === 'all') return transactions;
-        
+
         const now = new Date();
         const days = timeRange === '7d' ? 7 : timeRange === '30d' ? 30 : 90;
         const cutoff = subDays(now, days);
-        
+
         return transactions.filter(tx => {
             const txDate = typeof tx.date === 'string' ? parseISO(tx.date) : new Date(tx.date);
             return isAfter(txDate, cutoff);
@@ -87,12 +87,12 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
     const getSegmentColor = (index: number, totalSegments: number) => {
         const baseColor = colors[metric];
         const opacity = 1 - (index / (totalSegments + 1)) * 0.7;
-        
+
         const hex = baseColor.replace('#', '');
         const r = parseInt(hex.substring(0, 2), 16);
         const g = parseInt(hex.substring(2, 4), 16);
         const b = parseInt(hex.substring(4, 6), 16);
-        
+
         return `rgba(${r}, ${g}, ${b}, ${opacity})`;
     };
 
@@ -102,11 +102,11 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
         return data.map((item, index) => {
             const angle = item.percent * 360;
             const segment = {
-            ...item,
+                ...item,
                 startAngle,
                 endAngle: startAngle + angle,
-            color: getSegmentColor(index, data.length)
-        };
+                color: getSegmentColor(index, data.length)
+            };
             startAngle += angle;
             return segment;
         });
@@ -115,7 +115,7 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
     // 将角度转换为弧形路径
     const describeArc = (startAngle: number, endAngle: number, innerRadius: number, outerRadius: number) => {
         const angleDiff = endAngle - startAngle;
-        
+
         // 特殊处理：当只有一个分类（接近 360°）时，绘制完整的圆环
         if (angleDiff >= 359.9) {
             // 使用两个半圆来绘制完整的圆环
@@ -129,10 +129,10 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
                 Z
             `;
         }
-        
+
         const startRad = (startAngle * Math.PI) / 180;
         const endRad = (endAngle * Math.PI) / 180;
-        
+
         const x1 = center + outerRadius * Math.cos(startRad);
         const y1 = center + outerRadius * Math.sin(startRad);
         const x2 = center + outerRadius * Math.cos(endRad);
@@ -141,49 +141,49 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
         const y3 = center + innerRadius * Math.sin(endRad);
         const x4 = center + innerRadius * Math.cos(startRad);
         const y4 = center + innerRadius * Math.sin(startRad);
-        
+
         const largeArc = angleDiff > 180 ? 1 : 0;
-        
+
         return `M ${x1} ${y1} A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${x4} ${y4} Z`;
     };
 
     // 处理鼠标移动事件，计算悬停的扇形
     const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
         if (!svgRef.current || data.length === 0) return;
-        
+
         const rect = svgRef.current.getBoundingClientRect();
         const x = ((e.clientX - rect.left) / rect.width) * 100 - center;
         const y = ((e.clientY - rect.top) / rect.height) * 100 - center;
-        
+
         // 计算到中心的距离
         const distance = Math.sqrt(x * x + y * y);
         const innerRadius = radius - strokeWidth / 2;
         const outerRadius = radius + strokeWidth / 2;
-        
+
         // 如果在环形区域内
         if (distance >= innerRadius && distance <= outerRadius) {
             // 计算角度 (从顶部开始，顺时针)
             let angle = Math.atan2(y, x) * (180 / Math.PI);
             angle = (angle + 90 + 360) % 360; // 转换为从顶部开始的角度
-            
+
             // 找到对应的扇形
             for (let i = 0; i < segments.length; i++) {
                 const seg = segments[i];
                 const start = ((seg.startAngle + 90) % 360 + 360) % 360;
                 let end = ((seg.endAngle + 90) % 360 + 360) % 360;
-                
+
                 // 处理跨越 0 度的情况
                 if (end < start) end += 360;
                 let checkAngle = angle;
                 if (checkAngle < start) checkAngle += 360;
-                
+
                 if (checkAngle >= start && checkAngle < end) {
                     setActiveIndex(i);
                     return;
                 }
             }
         }
-        
+
         setActiveIndex(null);
     };
 
@@ -211,9 +211,9 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
                 {data.length > 0 ? (
                     <div className="relative w-56 h-56">
                         {/* SVG Donut Chart - 使用 path 绘制扇形 */}
-                        <svg 
+                        <svg
                             ref={svgRef}
-                            viewBox="0 0 100 100" 
+                            viewBox="0 0 100 100"
                             className="w-full h-full"
                             onMouseMove={handleMouseMove}
                             onMouseLeave={handleMouseLeave}
@@ -221,29 +221,29 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
                             {segments.map((segment, index) => {
                                 // 避免绘制 0% 的扇形
                                 if (segment.percent < 0.001) return null;
-                                
+
                                 const innerRadius = radius - strokeWidth / 2;
                                 const outerRadius = radius + strokeWidth / 2;
                                 const isActive = activeIndex === index;
-                                
+
                                 // 激活时稍微放大
                                 const activeInner = isActive ? innerRadius - 2 : innerRadius;
                                 const activeOuter = isActive ? outerRadius + 2 : outerRadius;
-                                
+
                                 return (
                                     <path
-                                    key={segment.name}
+                                        key={segment.name}
                                         d={describeArc(segment.startAngle, segment.endAngle, activeInner, activeOuter)}
                                         fill={segment.color}
                                         className="transition-all duration-200 cursor-pointer"
                                         style={{
                                             filter: isActive ? 'brightness(1.1)' : 'none'
                                         }}
-                                />
+                                    />
                                 );
                             })}
                         </svg>
-                        
+
                         {/* Center Text */}
                         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
                             <span className="text-xs text-gray-400">合计</span>
@@ -287,23 +287,23 @@ export function LifeRecipe({ transactions }: LifeRecipeProps) {
                         ))}
                     </div>
                 </div>
-                
+
                 {/* 交易类型 */}
                 <div className="flex items-center justify-between">
-                <div className="text-sm font-medium text-gray-700">交易类型</div>
-                <div className="flex bg-gray-100 p-1 rounded-lg">
-                    {(['expense', 'income'] as Metric[]).map(m => (
-                        <button
-                            key={m}
-                            onClick={() => setMetric(m)}
-                            className={cn(
-                                "px-3 py-1 text-xs font-medium rounded-md transition-all",
-                                metric === m ? "bg-white shadow-sm text-gray-900" : "text-gray-500 hover:text-gray-700"
-                            )}
-                        >
-                            {m === 'expense' ? '支出' : '收入'}
-                        </button>
-                    ))}
+                    <div className="text-sm font-medium text-gray-700">交易类型</div>
+                    <div className="flex bg-gray-100 p-1 rounded-lg">
+                        {(['expense', 'income'] as Metric[]).map(m => (
+                            <button
+                                key={m}
+                                onClick={() => setMetric(m)}
+                                className={cn(
+                                    "px-3 py-1 text-xs font-medium rounded-md transition-all",
+                                    metric === m ? "bg-white shadow-sm text-gray-900" : "text-gray-500 hover:text-gray-700"
+                                )}
+                            >
+                                {m === 'expense' ? '支出' : '收入'}
+                            </button>
+                        ))}
                     </div>
                 </div>
             </div>
