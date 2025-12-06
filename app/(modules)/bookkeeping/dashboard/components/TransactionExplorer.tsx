@@ -5,7 +5,7 @@ import { format, eachDayOfInterval, eachWeekOfInterval, eachMonthOfInterval, isS
 import { zhCN } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight } from "lucide-react";
-import { useBookkeepingColors } from "@/lib/bookkeeping/useColors";
+import { getBookkeepingSettings } from "@/lib/bookkeeping/actions";
 
 interface TransactionExplorerProps {
     transactions: any[];
@@ -27,16 +27,30 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
     const [granularity, setGranularity] = React.useState<Granularity>('day');
     const [timeRange, setTimeRange] = React.useState<TimeRange>('30d');
     const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null);
-    const { colors } = useBookkeepingColors(); // ✅ 使用缓存Hook
+    const [colors, setColors] = React.useState({
+        expense: '#ef4444',
+        income: '#22c55e',
+        transfer: '#0ea5e9'
+    });
+
+    React.useEffect(() => {
+        getBookkeepingSettings().then(settings => {
+            setColors({
+                expense: settings.expense_color,
+                income: settings.income_color,
+                transfer: settings.transfer_color
+            });
+        });
+    }, []);
 
     // 根据时间范围过滤交易
     const filteredTransactions = React.useMemo(() => {
         if (timeRange === 'all') return transactions;
-        
+
         const now = new Date();
         const days = timeRange === '7d' ? 7 : timeRange === '30d' ? 30 : 90;
         const cutoff = subDays(now, days);
-        
+
         return transactions.filter(tx => {
             const txDate = typeof tx.date === 'string' ? parseISO(tx.date) : new Date(tx.date);
             return isAfter(txDate, cutoff);
@@ -152,7 +166,7 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
                             {/* Grid Lines (Optional) */}
                             <line x1={padding.left} y1={getY(stats.min)} x2={width - padding.right} y2={getY(stats.min)} stroke="#f3f4f6" strokeWidth="1" />
                             <line x1={padding.left} y1={getY(stats.max)} x2={width - padding.right} y2={getY(stats.max)} stroke="#f3f4f6" strokeWidth="1" />
-                            
+
                             {/* Area fill (optional gradient) */}
                             <defs>
                                 <linearGradient id="lineGradient" x1="0" y1="0" x2="0" y2="1">
@@ -197,7 +211,7 @@ export function TransactionExplorer({ transactions }: TransactionExplorerProps) 
                                     />
                                 </g>
                             )}
-                            
+
                             {/* Invisible Hit Areas */}
                             {chartData.map((_, i) => (
                                 <rect

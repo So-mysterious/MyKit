@@ -1,5 +1,77 @@
 # 开发日志 (Development Log)
 
+## 2025-12-06
+- **安全账户删除功能增强**：
+    - **后端改进** (`lib/bookkeeping/actions.ts`):
+        - `deleteAccount(id)`: 重写删除逻辑，先查找所有相关划转流水，通过 `transfer_group_id` 删除配对的双侧记录，避免孤立划转数据。
+        - 实现流程：
+          1. 查询账户的所有划转流水
+          2. 收集唯一的 `transfer_group_id`
+          3. 删除整个划转组（两侧流水）
+          4. 删除账户（ON DELETE CASCADE 自动清理其他数据）
+        - 返回值包含删除的划转组数量，方便调试验证
+    - **前端交互优化** (`app/(modules)/bookkeeping/accounts/page.tsx`):
+        - 增强删除确认对话框，详细列出将被删除的数据类型
+        - 添加 console.log 调试输出，显示删除进度
+        - **修复 UI 刷新问题**: 删除成功后立即更新 React 状态（`setAccounts(prev => prev.filter(...))`），避免缓存时序导致的延迟刷新
+        - 错误处理：删除失败时重新加载数据确保 UI 正确
+        - 全面的缓存失效：包括 accounts、dashboardTransactions、heatmapAggregation、dashboardBudgetData
+
+- **预算重算功能完整实现**：
+    - **后端 API** (`lib/bookkeeping/actions.ts`):
+      - `recalculateAllBudgetPeriods()`: 重算所有历史预算周期，生成差异报告但不修改数据库
+        - 查询所有预算周期记录
+        - 逐个重新计算 actual_amount、soft_limit、indicator_status
+        - 对比新旧值，只返回有变化的记录
+        - 复用 `updateBudgetPeriodRecord` 的核心计算逻辑
+      - `commitBudgetRecalculations(recalculations)`: 批量提交用户确认的修正数据
+        - 使用批量 UPDATE 操作
+        - 正确类型转换 indicator_status（避免类型错误）
+      - 新增 `BudgetRecalculationItem` 接口定义差异报告结构
+    - **前端组件** (`components/BudgetRecalcDialog.tsx`):
+        - 创建新对话框组件展示重算报告
+        - 按预算计划分组显示修正项
+        - 对比显示旧值 → 新值的变化
+        - 状态图标：⭐ 优秀、✅ 达标、❌ 超支
+        - 提供取消和确认按钮，用户确认后才提交
+    - **页面集成** (`app/(modules)/bookkeeping/budget/page.tsx`):
+        - 页面右上角添加"重算所有预算"按钮
+        - 二次确认机制（提示耗时 5-10 秒）
+        - Loading 状态显示
+        - 成功后失效相关缓存（budgetPlans、dashboardBudgetData）并刷新
+    - **设计原则**：
+        - ✅ 前端计算，避免长时间数据库锁
+        - ✅ 用户确认再提交，防止中断导致数据不一致
+        - ✅ 透明的差异报告，用户可审核修正内容
+
+- **划转显示逻辑健壮性增强**：
+    - **数据库设计验证**：
+        - 确认实际数据库使用 `transfer_group_id` 机制（无 `to_account_id` 字段）
+        - 符合会计原理：一笔划转 = 2条流水 + 共享 `transfer_group_id`
+        - 验证 UUID 格式限制（只能用 0-9, a-f）
+    - **前端显示改进** (`components/TransactionItem.tsx`):
+        - 添加健壮性检查，防止"A→A"自转账显示bug
+        - 账户缺失检查：显示"A → [已删除账户]"（灰色提示）
+        - 自转账异常检查：显示"A → [数据异常]"（红色警告）+ 控制台警告
+        - 单独划转处理：显示"A → [未显示]"或"[未显示] → A"（灰色提示）
+        - 颜色编码：深灰（正常）、浅灰（不完整）、红色（异常）
+    - **根本原因分析**：
+        - 问题不是数据库设计缺陷，而是前端未处理边界情况
+        - 数据完整性检查：确认所有 transfer_group 都有2条记录
+    - **测试数据脚本** (`complete_database_reset.sql`):
+        - 创建完整的测试环境（3个账户、多种划转场景）
+        - 数据完整性验证查询
+        - 修复 UUID 格式问题（使用有效的十六进制字符）
+
+- **关键技术提示**：
+    - **安全删除**: 必须先清理 `transfer_group`，再删除账户，避免孤立数据
+    - **UI 刷新**: 关键操作后立即更新 React 状态，不依赖异步缓存刷新
+    - **预算重算**: 采用"计算报告 → 用户确认 → 批量提交"模式，保证原子性
+    - **划转显示**: 前端必须处理所有边界情况（账户缺失、数据不完整、自转账异常）
+    - **会计原理**: 双向分录机制（transfer_group_id）优于单向引用（to_account_id）
+
+---
+
 ## 2025-12-03
 - **流水页面编辑和删除功能**:
     - **后端函数** (`lib/bookkeeping/actions.ts`):

@@ -77,7 +77,22 @@ export function TransactionItem({
     const toAcc = relatedTransfer.accounts?.name;
 
     displayTitle = `划转`;
-    displayAccount = `${fromAcc} ➔ ${toAcc}`;
+
+    // ✅ 健壮性检查：防止自转账显示和数据不完整情况
+    if (!fromAcc || !toAcc) {
+      // 数据不完整（账户信息缺失）
+      displayAccount = `${fromAcc || '未知账户'} ➔ ${toAcc || '[已删除账户]'}`;
+      amountColor = "#9ca3af"; // gray-400 表示数据异常
+    } else if (fromAcc === toAcc) {
+      // 自转账异常（理论上不应该出现）
+      console.warn('发现自转账数据异常:', transaction.id);
+      displayAccount = `${fromAcc} ➔ [数据异常]`;
+      amountColor = "#ef4444"; // red 表示错误
+    } else {
+      // 正常的划转
+      displayAccount = `${fromAcc} ➔ ${toAcc}`;
+      amountColor = "#111827"; // gray-900 for normal transfers
+    }
 
     const fromCurr = accounts?.currency;
     const toCurr = relatedTransfer.accounts?.currency;
@@ -92,7 +107,22 @@ export function TransactionItem({
     } else {
       displayAmount = `${fromSymbol}${formattedFromAmount}`;
     }
-    amountColor = "#111827"; // gray-900 for transfers
+  } else if (type === 'transfer') {
+    // ✅ 处理单独的划转流水（没有relatedTransfer的情况）
+    // 这可能是不完整的transfer_group或者分页导致的
+    displayTitle = `划转`;
+
+    if (amount < 0) {
+      displayAccount = `${accounts?.name || '未知'} ➔ [未显示]`;
+    } else {
+      displayAccount = `[未显示] ➔ ${accounts?.name || '未知'}`;
+    }
+
+    const currency = accounts?.currency || 'CNY';
+    const symbol = getSymbol(currency);
+    const formattedAbsAmount = formatAmount(Math.abs(amount), displaySettings);
+    displayAmount = `${symbol}${formattedAbsAmount}`;
+    amountColor = "#9ca3af"; // gray-400 表示不完整
   } else {
     const currency = accounts?.currency || 'CNY';
     const symbol = getSymbol(currency);

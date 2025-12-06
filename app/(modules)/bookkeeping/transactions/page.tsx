@@ -493,8 +493,14 @@ export default function TransactionsPage() {
         setDeletingId(transaction.id);
         try {
             await deleteTransaction(transaction.id);
-            // 删除后失效缓存并刷新
-            await cache.invalidateAndRefresh(['transactions', 'accounts']);
+            // 删除后失效缓存并刷新（包括Dashboard相关缓存）
+            await cache.invalidateAndRefresh([
+                'transactions',
+                'accounts',
+                'dashboardTransactions',
+                'heatmapAggregation',
+                'dashboardBudgetData'
+            ]);
             await loadTransactions(true);
         } catch (error) {
             console.error(error);
@@ -506,8 +512,14 @@ export default function TransactionsPage() {
 
     const handleEditSuccess = async () => {
         setEditingTransaction(null);
-        // 编辑成功后失效缓存并刷新
-        await cache.invalidateAndRefresh(['transactions', 'accounts']);
+        // 编辑成功后失效缓存并刷新（包括Dashboard相关缓存）
+        await cache.invalidateAndRefresh([
+            'transactions',
+            'accounts',
+            'dashboardTransactions',
+            'heatmapAggregation',
+            'dashboardBudgetData'
+        ]);
         await loadTransactions(true);
     };
 

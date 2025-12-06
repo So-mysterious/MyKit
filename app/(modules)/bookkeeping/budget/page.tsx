@@ -28,9 +28,13 @@ import {
   toggleBudgetPlanStatus,
   restartBudgetPlan,
   BudgetPlanWithRecords,
+  recalculateAllBudgetPeriods,
+  commitBudgetRecalculations,
+  BudgetRecalculationItem,
 } from "@/lib/bookkeeping/actions";
 import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 import { useBookkeepingColors } from "@/lib/bookkeeping/useColors";
+import { BudgetRecalcDialog } from "@/components/BudgetRecalcDialog";
 
 // 周期选项
 const PERIOD_OPTIONS = [
@@ -91,6 +95,12 @@ export default function BudgetPage() {
   const [expandedPlanId, setExpandedPlanId] = React.useState<string | null>(null);
   const [form, setForm] = React.useState<FormState>(initialFormState);
   const [error, setError] = React.useState<string | null>(null);
+
+  // 重算相关状态 
+  const [recalculating, setRecalculating] = React.useState(false);
+  const [recalcReport, setRecalcReport] = React.useState<BudgetRecalculationItem[] | null>(null);
+  const [showRecalcDialog, setShowRecalcDialog] = React.useState(false);
+  const [commitingRecalc, setCommitingRecalc] = React.useState(false);
 
   // 获取支出和划转标签
   const expenseAndTransferTags = React.useMemo(() => {
@@ -215,6 +225,8 @@ export default function BudgetPage() {
         });
       }
 
+      // ✅ 失效并刷新缓存
+      await cache.invalidateAndRefresh(['budgetPlans', 'dashboardBudgetData']);
       resetForm();
       await loadData();
     } catch (err) {
@@ -254,10 +266,57 @@ export default function BudgetPage() {
 
     try {
       await deleteBudgetPlan(planId);
+      // ✅ 失效并刷新缓存
+      await cache.invalidateAndRefresh(['budgetPlans', 'dashboardBudgetData']);
       await loadData();
     } catch (err) {
       console.error("Failed to delete plan:", err);
       setError(err instanceof Error ? err.message : "删除失败");
+    }
+  };
+
+  // 重算所有预算
+  const handleRecalculate = async () => {
+    if (!confirm('重算所有预算周期可能需要较长时间（约5-10秒），确定要继续吗？')) {
+      return;
+    }
+
+    setRecalculating(true);
+    try {
+      const results = await recalculateAllBudgetPeriods();
+
+      if (results.length === 0) {
+        alert('所有预算数据已是最新，无需修正');
+        return;
+      }
+
+      setRecalcReport(results);
+      setShowRecalcDialog(true);
+    } catch (err) {
+      console.error(err);
+      alert('重算失败：' + (err instanceof Error ? err.message : '未知错误'));
+    } finally {
+      setRecalculating(false);
+    }
+  };
+
+  // 提交重算结果
+  const handleCommitRecalc = async () => {
+    if (!recalcReport) return;
+
+    setCommitingRecalc(true);
+    try {
+      await commitBudgetRecalculations(recalcReport);
+      await cache.invalidateAndRefresh(['budgetPlans', 'dashboardBudgetData']);
+      alert(`成功修正 ${recalcReport.length} 个周期的数据`);
+      setShowRecalcDialog(false);
+      setRecalcReport(null);
+      await loadData();
+    } catch (err) {
+      console.error(err);
+      alert('提交失败，数据未修改：' + (err instanceof Error ? err.message : '未知错误'));
+    } finally {
+      setCommitingRecalc(false);
     }
   };
 
@@ -738,14 +797,35 @@ export default function BudgetPage() {
   return (
     <div className="space-y-6">
       {/* 页面标题 */}
-      <div className="space-y-1">
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
-          Budget Management
-        </p>
-        <h1 className="text-2xl font-bold tracking-tight">预算管理</h1>
-        <p className="text-sm text-gray-500">
-          设置和管理各类支出预算计划。预算执行情况请在仪表盘查看。
-        </p>
+      <div className="flex items-start justify-between">
+        <div className="space-y-1">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
+            Budget Management
+          </p>
+          <h1 className="text-2xl font-bold tracking-tight">预算管理</h1>
+          <p className="text-sm text-gray-500">
+            设置和管理各类支出预算计划。预算执行情况请在仪表盘查看。
+          </p>
+        </div>
+
+        {/* 重算按钮 */}
+        <Button
+          variant="outline"
+          onClick={handleRecalculate}
+          disabled={recalculating || loading}
+        >
+          {recalculating ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              计算中...
+            </>
+          ) : (
+            <>
+              <RefreshCw className="w-4 h-4 mr-2" />
+              重算所有预算
+            </>
+          )}
+        </Button>
       </div>
 
       {/* 全局错误提示 */}
@@ -813,6 +893,17 @@ export default function BudgetPage() {
           </div>
         )}
       </div>
+
+      {/* 重算对话框 */}
+      {recalcReport && (
+        <BudgetRecalcDialog
+          open={showRecalcDialog}
+          onOpenChange={setShowRecalcDialog}
+          recalculations={recalcReport}
+          onConfirm={handleCommitRecalc}
+          loading={commitingRecalc}
+        />
+      )}
     </div>
   );
 }

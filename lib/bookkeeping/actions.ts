@@ -73,9 +73,40 @@ export async function updateAccount(id: string, data: { name?: string; type?: Ac
   if (error) throw error;
 }
 
+/**
+ * 安全删除账户
+ * 会先清理该账户相关的所有划转流水（包括对侧账户的流水）
+ * 然后删除账户（级联删除其他相关数据）
+ */
 export async function deleteAccount(id: string) {
+  // 1. 查找该账户相关的所有划转流水
+  const { data: transfers, error: transferError } = await supabase
+    .from('transactions')
+    .select('transfer_group_id')
+    .eq('account_id', id)
+    .eq('type', 'transfer')
+    .not('transfer_group_id', 'is', null);
+
+  if (transferError) throw transferError;
+
+  // 2. 收集所有不重复的transfer_group_id
+  const groupIds = [...new Set(transfers?.map(t => t.transfer_group_id).filter(Boolean))] as string[];
+
+  // 3. 删除所有划转组的双侧流水（避免对侧账户留下孤立的划转记录）
+  if (groupIds.length > 0) {
+    const { error: deleteTransferError } = await supabase
+      .from('transactions')
+      .delete()
+      .in('transfer_group_id', groupIds);
+
+    if (deleteTransferError) throw deleteTransferError;
+  }
+
+  // 4. 删除账户（ON DELETE CASCADE会自动删除其他相关数据）
   const { error } = await supabase.from('accounts').delete().eq('id', id);
   if (error) throw error;
+
+  return { success: true, transferGroupsDeleted: groupIds.length };
 }
 
 // --- Transactions ---
@@ -1968,6 +1999,157 @@ export async function updateAllActiveBudgetPeriods(): Promise<void> {
     await updateBudgetPeriodRecord(record.id);
   }
 }
+
+// --- Budget Recalculation ---
+
+/**
+ * 预算重算结果
+ */
+export interface BudgetRecalculationItem {
+  periodId: string;
+  planId: string;
+  planName: string;  // 用于显示
+  periodStart: string;
+  periodEnd: string;
+  oldValues: {
+    actual_amount: number | null;
+    soft_limit: number | null;
+    indicator_status: string;
+  };
+  newValues: {
+    actual_amount: number;
+    soft_limit: number | null;
+    indicator_status: string;
+  };
+}
+
+/**
+ * 重新计算所有预算周期的数据
+ * 不写数据库，只返回差异报告
+ * 用于用户确认后再批量提交
+ */
+export async function recalculateAllBudgetPeriods(): Promise<BudgetRecalculationItem[]> {
+  // 1. 获取所有预算周期记录
+  const { data: periods, error } = await supabase
+    .from('budget_period_records')
+    .select(`
+      id,
+      plan_id,
+      period_start,
+      period_end,
+      actual_amount,
+      soft_limit,
+      indicator_status,
+      hard_limit,
+      budget_plans (
+        id,
+        plan_type,
+        category_name,
+        hard_limit,
+        limit_currency,
+        soft_limit_enabled,
+        account_filter_mode,
+        account_filter_ids,
+        included_categories
+      )
+    `)
+    .order('period_start', { ascending: true });
+
+  if (error) throw error;
+
+  // 2. 重新计算每个周期
+  const recalculations: BudgetRecalculationItem[] = [];
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const period of (periods || []) as any[]) {
+    const plan = period.budget_plans as BudgetPlanRow;
+
+    // 计算actual_amount
+    let actualAmount: number;
+    if (plan.plan_type === 'total') {
+      actualAmount = await calculateTotalSpending(
+        plan.included_categories,
+        period.period_start,
+        period.period_end,
+        plan.limit_currency,
+        plan.account_filter_mode,
+        plan.account_filter_ids
+      );
+    } else {
+      actualAmount = await calculateCategorySpending(
+        plan.category_name!,
+        period.period_start,
+        period.period_end,
+        plan.limit_currency,
+        plan.account_filter_mode,
+        plan.account_filter_ids
+      );
+    }
+
+    // 计算soft_limit
+    let softLimit: number | null = null;
+    if (plan.soft_limit_enabled) {
+      softLimit = await calculateSoftLimit(plan, period.period_start, period.period_end);
+    }
+
+    // 判断状态
+    const indicatorStatus = determineIndicatorStatus(actualAmount, period.hard_limit, softLimit);
+
+    // 对比差异
+    const hasChanges =
+      Math.abs((actualAmount || 0) - (period.actual_amount || 0)) > 0.01 ||
+      Math.abs((softLimit || 0) - (period.soft_limit || 0)) > 0.01 ||
+      indicatorStatus !== period.indicator_status;
+
+    if (hasChanges) {
+      recalculations.push({
+        periodId: period.id,
+        planId: plan.id,
+        planName: plan.plan_type === 'total' ? '总支出预算' : `${plan.category_name}预算`,
+        periodStart: period.period_start,
+        periodEnd: period.period_end,
+        oldValues: {
+          actual_amount: period.actual_amount,
+          soft_limit: period.soft_limit,
+          indicator_status: period.indicator_status
+        },
+        newValues: {
+          actual_amount: actualAmount,
+          soft_limit: softLimit,
+          indicator_status: indicatorStatus
+        }
+      });
+    }
+  }
+
+  return recalculations;
+}
+
+/**
+ * 提交预算重算结果
+ * 批量更新数据库
+ */
+export async function commitBudgetRecalculations(
+  recalculations: BudgetRecalculationItem[]
+): Promise<{ success: boolean; updated: number }> {
+  // 批量更新
+  for (const item of recalculations) {
+    const { error } = await supabase
+      .from('budget_period_records')
+      .update({
+        actual_amount: item.newValues.actual_amount,
+        soft_limit: item.newValues.soft_limit,
+        indicator_status: item.newValues.indicator_status as 'star' | 'green' | 'red' | 'pending'
+      })
+      .eq('id', item.periodId);
+
+    if (error) throw error;
+  }
+
+  return { success: true, updated: recalculations.length };
+}
+
+// --- End of Budget Recalculation ---
 
 /**
  * 检查并更新过期计划状态

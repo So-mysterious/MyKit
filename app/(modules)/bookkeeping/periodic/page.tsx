@@ -303,6 +303,8 @@ export default function PeriodicTasksPage() {
         }),
       });
 
+      // ✅ 失效并刷新缓存
+      await cache.invalidateAndRefresh(['periodicTasks']);
       setForm({ ...DEFAULT_FORM, accountId: accounts[0]?.id || "" });
       setShowForm(false);
       await fetchData();
@@ -339,6 +341,8 @@ export default function PeriodicTasksPage() {
     setDeletingId(task.id);
     try {
       await deletePeriodicTask(task.id);
+      // ✅ 失效并刷新缓存
+      await cache.invalidateAndRefresh(['periodicTasks']);
       await fetchData();
     } catch (error) {
       console.error(error);
@@ -410,6 +414,8 @@ export default function PeriodicTasksPage() {
         to_amount: editForm.type === "transfer" && editForm.toAmount ? parseFloat(editForm.toAmount) : null,
       });
 
+      // ✅ 失效并刷新缓存
+      await cache.invalidateAndRefresh(['periodicTasks']);
       setEditingId(null);
       await fetchData();
     } catch (error) {

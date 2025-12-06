@@ -58,15 +58,34 @@ export default function AccountsPage() {
   }, [fetchAccounts]);
 
   const handleDelete = async (id: string, name: string) => {
-    if (confirm(`确定要删除账户 "${name}" 吗？所有的流水记录也会被删除！`)) {
-      try {
-        await deleteAccount(id);
-        // 删除后失效缓存并刷新
-        await cache.invalidateAndRefresh(['accounts']);
-        await fetchAccounts();
-      } catch (error) {
-        alert("删除失败");
-      }
+    if (!confirm(`确定要删除账户 "${name}" 吗？\n\n⚠️ 警告：所有相关数据将被永久删除：\n• 所有流水记录\n• 所有快照记录\n• 相关的划转记录（含对侧账户）\n• 查账记录\n• 周期任务\n\n此操作不可恢复！`)) {
+      return;
+    }
+
+    try {
+      console.log('开始删除账户:', id, name);
+
+      // 执行删除
+      const result = await deleteAccount(id);
+      console.log('删除成功:', result);
+
+      // 立即更新UI：从当前状态中移除已删除的账户
+      setAccounts(prev => prev.filter(acc => acc.id !== id));
+
+      // 失效所有相关缓存（后台异步执行）
+      cache.invalidateAndRefresh([
+        'accounts',
+        'dashboardTransactions',
+        'heatmapAggregation',
+        'dashboardBudgetData'
+      ]).catch(err => console.error('缓存失效失败:', err));
+
+      alert(`账户 "${name}" 已成功删除`);
+    } catch (error) {
+      console.error('删除账户失败:', error);
+      alert(`删除失败：${error instanceof Error ? error.message : '未知错误'}\n\n请检查控制台了解详细信息。`);
+      // 删除失败，重新加载以确保UI正确
+      await fetchAccounts();
     }
   };
 
@@ -175,7 +194,7 @@ export default function AccountsPage() {
                         className="text-red-600 focus:text-red-600"
                         onClick={() => handleDelete(account.id, account.name)}
                       >
-                        <Trash2 className="mr-2 h-4 w-4" /> 停用/删除
+                        <Trash2 className="mr-2 h-4 w-4" /> 删除账户
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>

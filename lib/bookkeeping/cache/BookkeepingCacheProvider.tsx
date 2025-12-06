@@ -72,18 +72,18 @@ interface BookkeepingCacheContextValue {
 // ===== Cache Configuration =====
 
 const CACHE_TTL: Record<CacheKey, number> = {
-    accounts: 5 * 60 * 1000,              // 5分钟
-    tags: 30 * 60 * 1000,                 // 30分钟 - active tags
-    allTags: 10 * 60 * 1000,              // 10分钟 - all tags
-    transactions: 2 * 60 * 1000,          // 2分钟
-    budgetPlans: 10 * 60 * 1000,          // 10分钟
-    periodicTasks: 10 * 60 * 1000,        // 10分钟
-    reconciliationIssues: 5 * 60 * 1000,  // 5分钟
-    bookkeepingSettings: 30 * 60 * 1000,  // 30分钟
-    currencyRates: 30 * 60 * 1000,        // 30分钟
-    dashboardTransactions: 2 * 60 * 1000, // 2分钟 - Dashboard专用流水
-    dashboardBudgetData: 5 * 60 * 1000,   // 5分钟 - Dashboard预算数据
-    heatmapAggregation: 5 * 60 * 1000,    // 5分钟 - Heatmap聚合数据
+    accounts: 60 * 60 * 1000,              // 1小时 (原5分钟)
+    tags: 120 * 60 * 1000,                 // 2小时 (原30分钟) - active tags
+    allTags: 120 * 60 * 1000,              // 2小时 (原10分钟) - all tags
+    transactions: 2 * 60 * 1000,           // 2分钟 (未使用)
+    budgetPlans: 60 * 60 * 1000,           // 1小时 (原10分钟)
+    periodicTasks: 60 * 60 * 1000,         // 1小时 (原10分钟)
+    reconciliationIssues: 60 * 60 * 1000,  // 1小时 (原5分钟)
+    bookkeepingSettings: 240 * 60 * 1000,  // 4小时 (原30分钟)
+    currencyRates: 240 * 60 * 1000,        // 4小时 (原30分钟)
+    dashboardTransactions: 30 * 60 * 1000, // 30分钟 (原2分钟) - Dashboard专用流水
+    dashboardBudgetData: 30 * 60 * 1000,   // 30分钟 (原5分钟) - Dashboard预算数据
+    heatmapAggregation: 30 * 60 * 1000,    // 30分钟 (原5分钟) - Heatmap聚合数据
 };
 
 const CACHE_VERSION = 'v1'; // 用于localStorage版本控制
