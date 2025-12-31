@@ -56,8 +56,13 @@ export function TransactionItem({
     amountColor = colors.expense;
   }
 
-  // Formatting
-  const timeStr = format(new Date(date), 'HH:mm');
+  // Formatting - 只在有具体时间时显示，使用UTC时间（不做时区转换）
+  const dateObj = new Date(date);
+  const hasSpecificTime = dateObj.getUTCHours() !== 0 || dateObj.getUTCMinutes() !== 0;
+  // ✅ 使用UTC时间，格式化为HH:mm
+  const timeStr = hasSpecificTime
+    ? `${String(dateObj.getUTCHours()).padStart(2, '0')}:${String(dateObj.getUTCMinutes()).padStart(2, '0')}`
+    : '';
 
   // Helper for currency symbol
   const getSymbol = (curr: string) => {

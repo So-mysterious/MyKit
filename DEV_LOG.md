@@ -1,6 +1,112 @@
 # 开发日志 (Development Log)
 
-## 2025-12-06
+## 2025-12-29 ~ 2025-12-31
+
+### Excel 解析器全面增强 (`lib/bookkeeping/importers/standardParser.ts`)
+
+- **货币符号处理**：
+  - 新增 `cleanedAmount` 逻辑，移除各类货币符号（`¥￥$€£`）、逗号、空格
+  - 之前 `¥47.90` 会解析失败（`parseFloat` 返回 `NaN`），现在正确解析为 `47.90`
+  - 同样处理 `toAmount`（对方金额）字段
+
+- **时间保留**：
+  - 新增 `formatDateTimeForExport()` 函数，从 Excel 日期字段提取时间部分
+  - 支持格式：`YYYY-MM-DD HH:MM:SS` 或 `YYYY-MM-DD`
+  - 存储格式：有时间则 `YYYY-MM-DDTHH:MM:SS`，无时间则仅 `YYYY-MM-DD`
+
+- **详细错误报告**：
+  - 新增 `tryParseRow()` 函数（替代原 `parseRow`），返回 `ParseRowResult` 结构
+  - 失败时返回 `{ error: { field, value, reason } }`，如：`{ field: '金额', value: '¥abc', reason: '金额无法解析为正数' }`
+  - 关键变量：`ParseRowResult`, `tryParseRow`, `newTxFields`, `fileRowList`
+
+### 重复检测算法重写
+
+- **4/5 字段模糊匹配**：
+  - 匹配字段：`日期`、`时间`、`金额`、`账户`、`分类`
+  - 规则：5 项中 4 项及以上相同 → 标记为"疑似重复"
+  - 关键函数：`isSuspectedDuplicate(newTx, existingTx)`
+  - 关键接口：`ExistingTxFields`, `FileRowEntry`
+
+- **双重比对**：
+  - 文件 vs 数据库：仅标记文件中的一条
+  - 文件内部重复：两条都标记（通过 `markedAsDuplicate` 标志位）
+
+- **数据库查询优化**：
+  - 获取 `category` 字段用于匹配（之前只获取 `type`）
+  - 提取 UTC 时间用于精确比对
+
+### 导出格式统一 (`app/(modules)/bookkeeping/data/page.tsx`)
+
+- **标准 8 列格式**：`日期 | 类型 | 金额 | 账户 | 分类 | 备注 | 对方账户 | 对方金额`
+- **移除单独币种列**：币种符号直接附加到金额字段（如 `¥195.00`）
+- **日期含时间**：使用 UTC 时间输出（`2025-10-26 13:31:26`）
+- **划转合并**：
+  - 新增 `mergeTransfersForExport()` 函数
+  - 按 `transfer_group_id` 分组，转出方为主记录，转入方填入"对方账户"和"对方金额"
+  - 关键属性：`_mergedTransfer`
+
+- **UI 改进**：
+  - 数据类型选择改为滑块二选一（流水记录 / 账户快照）
+  - 关键状态：`exportType: 'transactions' | 'snapshots'`
+
+### 时间显示修复 (`components/TransactionItem.tsx`)
+
+- **问题**：数据库存 `13:31:26+00` (UTC)，前端显示 `21:31` (UTC+8 转换)
+- **修复**：使用 `getUTCHours()`/`getUTCMinutes()` 获取 UTC 时间，不做时区转换
+- **条件显示**：仅当 `UTC时间 !== 00:00` 时显示时间，否则只显示日期
+- **关键变量**：`hasSpecificTime`, `timeStr`
+
+### 分页加载优化 (`app/(modules)/bookkeeping/transactions/page.tsx` + `lib/bookkeeping/actions.ts`)
+
+- **页面大小调整**：`PAGE_SIZE` 从 20 改为 50
+- **提前触发加载**：`useInView({ rootMargin: '1000px' })` 在距底部 1000px 时触发
+- **去重逻辑**：追加新数据时过滤已存在的 ID
+  ```typescript
+  const existingIds = new Set(prev.map(tx => tx.id));
+  const uniqueNewTx = newTx.filter(tx => !existingIds.has(tx.id));
+  ```
+
+- **划转配对自动获取** (`getTransactions`)：
+  - 查询后检测所有 `transfer_group_id`
+  - 自动补充获取缺失的配对记录
+  - 关键变量：`transferGroupIds`, `pairedTransfers`
+
+### 标签管理 UI 即时更新 (`lib/bookkeeping/cache/BookkeepingCacheProvider.tsx`)
+
+- **问题**：创建/删除标签后 UI 不刷新
+- **修复**：
+  - `getCachedTags` 和 `getCachedAllTags` 新增 `options?: { forceRefresh?: boolean }` 参数
+  - `invalidateAndRefresh` 调用时传入 `forceRefresh: true`
+  - 操作后显式更新本地状态：`setTags(await cache.getAllTags())`
+
+- **错误处理改进** (`lib/bookkeeping/actions.ts`：`createTag`)：
+  - 捕获 PostgreSQL 错误码 `23505`（唯一约束冲突）
+  - 返回友好错误消息：`标签「xxx」已存在`
+
+### 侧边栏固定布局
+
+- **Sidebar 组件** (`components/Sidebar.tsx`)：
+  - 从 `sticky top-14` 改为 `fixed top-14 left-0`
+  - 始终固定在视口左侧，不随页面滚动
+
+- **Layout 容器** (`app/(modules)/bookkeeping/layout.tsx`, `calendar/layout.tsx`)：
+  - 从 `flex h-[calc(100vh-3.5rem)]` 改为 `min-h-[calc(100vh-3.5rem)]`
+  - 内容区域添加 `ml-14`（侧边栏宽度）
+
+- **流水页面特殊处理** (`transactions/page.tsx`)：
+  - 外层容器从 `h-full` 改为 `h-[calc(100vh-3.5rem)]`
+  - 保持独立滚动上下文，确保日期悬浮（`sticky top-0`）正常工作
+
+### 关键技术提示
+
+- **UTC 时间处理**：存储和显示均使用 UTC，避免时区转换导致的偏差
+- **划转合并**：导出时按 `transfer_group_id` 分组，`amount < 0` 为转出方
+- **重复检测**：使用 4/5 字段模糊匹配，避免完全依赖精确匹配漏检
+- **Fixed 布局**：侧边栏使用 `fixed` 定位需要内容区配合 `margin-left`
+- **Sticky 生效条件**：需要父容器有固定高度和 `overflow` 属性
+
+---
+
 - **安全账户删除功能增强**：
     - **后端改进** (`lib/bookkeeping/actions.ts`):
         - `deleteAccount(id)`: 重写删除逻辑，先查找所有相关划转流水，通过 `transfer_group_id` 删除配对的双侧记录，避免孤立划转数据。

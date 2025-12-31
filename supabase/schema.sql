@@ -47,7 +47,30 @@ CREATE TABLE IF NOT EXISTS snapshots (
     type TEXT DEFAULT 'Manual' -- 'Auto' (每月自动), 'Manual' (手动添加)
 );
 
--- 4. Periodic Tasks Table (自动记账配置表)
+-- 4. Import Batches Table (导入批次表)
+-- 用于追踪和撤销批量导入操作
+-- 详见: import_batches_migration.sql
+CREATE TABLE IF NOT EXISTS import_batches (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    filename TEXT NOT NULL,
+    total_rows INT NOT NULL,
+    valid_count INT NOT NULL,
+    duplicate_count INT NOT NULL,
+    invalid_count INT NOT NULL,
+    uploaded_count INT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('completed', 'partial', 'failed', 'rolled_back')),
+    transaction_ids UUID[] NOT NULL DEFAULT '{}',
+    error_summary JSONB,
+    upload_duration_ms INT,
+    user_notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_import_batches_created ON import_batches(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_import_batches_status ON import_batches(status);
+CREATE INDEX IF NOT EXISTS idx_import_batches_transaction_ids ON import_batches USING GIN(transaction_ids);
+
+-- 5. Periodic Tasks Table (自动记账配置表)
 -- 用于生成定期收支（如月费、工资、定期划转）
 CREATE TABLE IF NOT EXISTS periodic_tasks (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

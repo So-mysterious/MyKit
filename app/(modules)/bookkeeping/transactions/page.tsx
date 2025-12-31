@@ -201,7 +201,8 @@ export default function TransactionsPage() {
     // 使用缓存Hook
     const cache = useBookkeepingCache();
 
-    const { ref, inView } = useInView();
+    // ✅ 提前触发加载：在距离底部1000px时就开始加载下一页
+    const { ref, inView } = useInView({ rootMargin: '1000px' });
 
     // Load Initial Data (accounts and tags from cache)
     React.useEffect(() => {
@@ -226,13 +227,22 @@ export default function TransactionsPage() {
             const currentPage = isRefresh ? 0 : page;
             const newTx = await getTransactions({
                 page: currentPage,
+                pageSize: 50,  // ✅ 明确指定50条
                 filters
             });
 
             if (newTx.length === 0) {
                 setHasMore(false);
             } else {
-                setTransactions(prev => isRefresh ? newTx : [...prev, ...newTx]);
+                setTransactions(prev => {
+                    if (isRefresh) {
+                        return newTx;
+                    }
+                    // ✅ 去重：避免后端补充的划转配对导致重复
+                    const existingIds = new Set(prev.map((tx: any) => tx.id));
+                    const uniqueNewTx = newTx.filter((tx: any) => !existingIds.has(tx.id));
+                    return [...prev, ...uniqueNewTx];
+                });
                 if (!isRefresh) {
                     setPage(prev => prev + 1);
                 }
@@ -524,7 +534,7 @@ export default function TransactionsPage() {
     };
 
     return (
-        <div className="h-full flex flex-col -m-6 bg-white">
+        <div className="h-[calc(100vh-3.5rem)] flex flex-col -m-6 bg-white">
             {/* Header & Filters */}
             <div className="flex flex-col gap-4 px-6 pt-6 pb-4 border-b border-gray-100 bg-white">
                 <div className="flex items-center justify-between">

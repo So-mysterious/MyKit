@@ -215,15 +215,15 @@ export function BookkeepingCacheProvider({ children }: { children: React.ReactNo
     }, []);
 
     // 获取accounts (带缓存，稳定引用)
-    const getCachedAccounts = React.useCallback(async (options?: { includeBalance?: boolean }) => {
+    const getCachedAccounts = React.useCallback(async (options?: { includeBalance?: boolean; forceRefresh?: boolean }) => {
         const cacheKey: CacheKey = 'accounts';
 
-        // 检查缓存
-        if (!isExpired(cacheKey)) {
+        // ✅ 如果forceRefresh为true，跳过缓存检查
+        if (!options?.forceRefresh && !isExpired(cacheKey)) {
             return cacheRef.current[cacheKey]!.data;
         }
 
-        // 缓存过期，重新加载
+        // 缓存过期或强制刷新，重新加载
         setLoading(prev => ({ ...prev, [cacheKey]: true }));
         try {
             const data = await getAccounts(options);
@@ -235,10 +235,11 @@ export function BookkeepingCacheProvider({ children }: { children: React.ReactNo
     }, [isExpired, updateCache]); // ✅ 只依赖稳定的函数
 
     // 获取tags (带缓存，稳定引用)
-    const getCachedTags = React.useCallback(async () => {
+    const getCachedTags = React.useCallback(async (options?: { forceRefresh?: boolean }) => {
         const cacheKey: CacheKey = 'tags';
 
-        if (!isExpired(cacheKey)) {
+        // ✅ 如果forceRefresh为true，跳过缓存检查
+        if (!options?.forceRefresh && !isExpired(cacheKey)) {
             return cacheRef.current[cacheKey]!.data;
         }
 
@@ -349,10 +350,11 @@ export function BookkeepingCacheProvider({ children }: { children: React.ReactNo
     }, [isExpired, updateCache]); // ✅ 只依赖稳定的函数
 
     // 获取allTags (带缓存，稳定引用)
-    const getCachedAllTags = React.useCallback(async () => {
+    const getCachedAllTags = React.useCallback(async (options?: { forceRefresh?: boolean }) => {
         const cacheKey: CacheKey = 'allTags';
 
-        if (!isExpired(cacheKey)) {
+        // ✅ 如果forceRefresh为true，跳过缓存检查
+        if (!options?.forceRefresh && !isExpired(cacheKey)) {
             return cacheRef.current[cacheKey]!.data;
         }
 
@@ -512,26 +514,26 @@ export function BookkeepingCacheProvider({ children }: { children: React.ReactNo
         // 1. 清除缓存
         invalidate(keysToRefresh);
 
-        // 2. 立即重新加载
+        // 2. 立即重新加载（forceRefresh跳过缓存检查）
         const promises = keysToRefresh.map(async (key) => {
             switch (key) {
                 case 'accounts':
-                    return getCachedAccounts();
+                    return getCachedAccounts({ forceRefresh: true });
                 case 'tags':
-                    return getCachedTags();
+                    return getCachedTags({ forceRefresh: true }); // ✅ 强制刷新修复
                 case 'transactions':
                     return getCachedTransactions();
                 case 'budgetPlans':
                     return getCachedBudgetPlans();
-                case 'periodicTasks': // ✅ 新增
+                case 'periodicTasks':
                     return getCachedPeriodicTasks();
-                case 'reconciliationIssues': // ✅ 新增
+                case 'reconciliationIssues':
                     return getCachedReconciliationIssues();
-                case 'bookkeepingSettings': // ✅ 新增
+                case 'bookkeepingSettings':
                     return getCachedBookkeepingSettings();
-                case 'allTags': // ✅ 新增
-                    return getCachedAllTags();
-                case 'currencyRates': // ✅ 新增
+                case 'allTags':
+                    return getCachedAllTags({ forceRefresh: true }); // ✅ 强制刷新修复
+                case 'currencyRates':
                     return getCachedCurrencyRates();
                 default:
                     return Promise.resolve();

@@ -103,7 +103,7 @@ export default function AccountsPage() {
   const handleSuccess = async () => {
     // CRUD操作成功后：失效缓存并刷新
     await cache.invalidateAndRefresh(['accounts']);
-    await fetchAccounts();
+    await fetchAccounts(true); // ✅ 立即刷新UI
   };
 
   return (
@@ -144,12 +144,7 @@ export default function AccountsPage() {
           ) : (
             accounts.map((account) => (
               <div key={account.id} className="relative group h-full">
-                <AccountCard
-                  name={account.name}
-                  type={account.type as AccountType}
-                  currency={account.currency}
-                  balance={account.balance}
-                />
+                <AccountCard account={account} />
 
                 {/* Actions Row */}
                 <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">

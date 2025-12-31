@@ -1,7 +1,7 @@
 "use client";
 
 import { Sidebar } from "@/components/Sidebar";
-import { LayoutDashboard, List, Wallet, Settings, ShieldAlert, CalendarClock, Target } from "lucide-react";
+import { LayoutDashboard, List, Wallet, Settings, ShieldAlert, CalendarClock, Target, Database } from "lucide-react";
 import { BookkeepingCacheProvider } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 
 const bookkeepingNavItems = [
@@ -11,6 +11,7 @@ const bookkeepingNavItems = [
   { icon: CalendarClock, href: "/bookkeeping/periodic", label: "周期交易" },
   { icon: Target, href: "/bookkeeping/budget", label: "预算" },
   { icon: ShieldAlert, href: "/bookkeeping/reconciliation", label: "查账" },
+  { icon: Database, href: "/bookkeeping/data", label: "数据管理" },
   { icon: Settings, href: "/bookkeeping/settings", label: "设置" },
 ];
 
@@ -21,10 +22,10 @@ export default function BookkeepingLayout({
 }) {
   return (
     <BookkeepingCacheProvider>
-      <div className="flex h-[calc(100vh-3.5rem)]">
+      <div className="min-h-[calc(100vh-3.5rem)]">
         <Sidebar items={bookkeepingNavItems} />
-        {/* 统一的内容区域：固定 padding，可滚动 */}
-        <div className="flex-1 overflow-y-auto p-6">
+        {/* 内容区域：固定左边距（sidebar宽度），可滚动 */}
+        <div className="ml-14 p-6">
           {children}
         </div>
       </div>

@@ -14,9 +14,9 @@ export default function CalendarLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex">
+    <div className="min-h-[calc(100vh-3.5rem)]">
       <Sidebar items={calendarNavItems} />
-      <div className="flex-1 p-6 bg-gray-50/50">
+      <div className="ml-14 p-6 bg-gray-50/50">
         {children}
       </div>
     </div>

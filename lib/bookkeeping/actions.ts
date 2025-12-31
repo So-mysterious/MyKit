@@ -32,16 +32,50 @@ export async function getAccounts(options?: { includeBalance?: boolean }) {
   // Calculate balance for each account
   const accountsWithBalance = await Promise.all(
     accounts.map(async (account: any) => {
-      const { data: transactions } = await supabase
-        .from('transactions')
-        .select('amount')
-        .eq('account_id', account.id);
+      // ✅ 正确逻辑：最近一次快照 + 快照后的所有流水
+      // 1. 查找最近的快照
+      const { data: snapshotData } = await supabase
+        .from('snapshots')
+        .select('balance, date')
+        .eq('account_id', account.id)
+        .order('date', { ascending: false })
+        .limit(1); // ✅ 移除.single()，因为可能没有数据
 
-      const balance = (transactions || []).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+      const latestSnapshot = snapshotData?.[0]; // ✅ 安全访问第一条记录
+
+      let balance = 0;
+      let lastSnapshotDate = null; // ✅ 新增：记录最近快照日期
+
+      if (latestSnapshot) {
+        // 有快照：快照余额 + 快照后的流水
+        balance = Number(latestSnapshot.balance || 0);
+        lastSnapshotDate = latestSnapshot.date; // ✅ 保存快照日期
+
+        const { data: transactionsAfterSnapshot } = await supabase
+          .from('transactions')
+          .select('amount')
+          .eq('account_id', account.id)
+          .gte('date', latestSnapshot.date);
+
+        const afterSnapshotSum = (transactionsAfterSnapshot || []).reduce(
+          (sum, tx) => sum + Number(tx.amount || 0),
+          0
+        );
+        balance += afterSnapshotSum;
+      } else {
+        // 无快照：所有流水的总和
+        const { data: transactions } = await supabase
+          .from('transactions')
+          .select('amount')
+          .eq('account_id', account.id);
+
+        balance = (transactions || []).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+      }
 
       return {
         ...account,
         balance: Number(balance.toFixed(2)),
+        last_snapshot_date: lastSnapshotDate, // ✅ 新增：返回快照日期
       };
     })
   );
@@ -268,7 +302,7 @@ export interface TransactionFilter {
   maxAmount?: number;
 }
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 50;
 
 /**
  * Unified transaction query function
@@ -364,6 +398,43 @@ export async function getTransactions(options?: {
   const { data, error } = await query;
 
   if (error) throw error;
+
+  // ✅ 补充获取缺失的划转配对
+  // 找出所有划转交易的group_id
+  const transferGroupIds = new Set<string>();
+  const existingIds = new Set<string>();
+
+  (data || []).forEach((tx: any) => {
+    existingIds.add(tx.id);
+    if (tx.type === 'transfer' && tx.transfer_group_id) {
+      transferGroupIds.add(tx.transfer_group_id);
+    }
+  });
+
+  // 如果有划转交易，检查是否有缺失的配对
+  if (transferGroupIds.size > 0) {
+    // 查询所有相关的划转配对
+    const { data: pairedTransfers, error: pairError } = await supabase
+      .from('transactions')
+      .select(`
+        *,
+        accounts (
+          name,
+          currency
+        )
+      `)
+      .in('transfer_group_id', Array.from(transferGroupIds));
+
+    if (!pairError && pairedTransfers) {
+      // 添加缺失的配对到结果中
+      pairedTransfers.forEach((tx: any) => {
+        if (!existingIds.has(tx.id)) {
+          (data as any[]).push(tx);
+        }
+      });
+    }
+  }
+
   return data;
 }
 
@@ -728,7 +799,13 @@ export async function createTag(data: {
   };
 
   const { error } = await supabase.from('bookkeeping_tags').insert(payload);
-  if (error) throw error;
+  if (error) {
+    // Handle duplicate key error
+    if (error.code === '23505') {
+      throw new Error(`标签「${data.name}」已存在`);
+    }
+    throw new Error(error.message || '创建标签失败');
+  }
 }
 
 export async function updateTag(id: string, data: Partial<Omit<TagRow, 'id'>>) {
@@ -2562,5 +2639,93 @@ export async function exportData(params: ExportParams): Promise<Blob> {
 
     const formatted = formatSnapshotsForExport(snapshotsWithAccounts);
     return exportToFile(formatted, format, `snapshots_${new Date().toISOString().split('T')[0]}.${format}`);
+  }
+}
+
+// --- Import Batch Management ---
+
+/**
+ * 获取所有导入批次记录
+ */
+export async function getImportBatches() {
+  const { data, error } = await supabase
+    .from('import_batches')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return data || [];
+}
+
+/**
+ * 撤销导入批次 - 删除所有关联的流水
+ */
+export async function rollbackImportBatch(batchId: string): Promise<{
+  success: boolean;
+  deletedCount: number;
+  skippedCount: number;
+  error?: string;
+}> {
+  try {
+    // 1. 获取批次信息
+    const { data: batchData, error: fetchError } = await supabase
+      .from('import_batches')
+      .select('*')
+      .eq('id', batchId)
+      .single();
+
+    if (fetchError || !batchData) {
+      return { success: false, deletedCount: 0, skippedCount: 0, error: '找不到该批次记录' };
+    }
+
+    // Cast to proper type
+    const batch = batchData as Database['public']['Tables']['import_batches']['Row'];
+
+    if (batch.status === 'rolled_back') {
+      return { success: false, deletedCount: 0, skippedCount: 0, error: '该批次已撤销' };
+    }
+
+    const transactionIds = batch.transaction_ids;
+    if (!transactionIds || transactionIds.length === 0) {
+      // 没有流水需要删除,直接更新状态
+      await supabase
+        .from('import_batches')
+        .update({ status: 'rolled_back' })
+        .eq('id', batchId);
+      return { success: true, deletedCount: 0, skippedCount: 0 };
+    }
+
+    // 2. 删除所有关联流水（跳过已不存在的）
+    let deletedCount = 0;
+    let skippedCount = 0;
+
+    for (const txId of transactionIds) {
+      const { error: deleteError } = await supabase
+        .from('transactions')
+        .delete()
+        .eq('id', txId);
+
+      if (deleteError) {
+        // 可能已被手动删除，跳过
+        skippedCount++;
+      } else {
+        deletedCount++;
+      }
+    }
+
+    // 3. 更新批次状态
+    const { error: updateError } = await supabase
+      .from('import_batches')
+      .update({ status: 'rolled_back' })
+      .eq('id', batchId);
+
+    if (updateError) {
+      console.error('更新批次状态失败:', updateError);
+    }
+
+    return { success: true, deletedCount, skippedCount };
+  } catch (error: any) {
+    console.error('撤销批次失败:', error);
+    return { success: false, deletedCount: 0, skippedCount: 0, error: error.message };
   }
 }

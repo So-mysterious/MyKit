@@ -44,8 +44,8 @@ function SidebarLink({ item, isActive }: { item: SidebarItem; isActive: boolean 
         href={item.href}
         className={cn(
           "w-10 h-10 flex items-center justify-center rounded-lg transition-all duration-200",
-          isActive 
-            ? "bg-white text-black shadow-sm border border-gray-200" 
+          isActive
+            ? "bg-white text-black shadow-sm border border-gray-200"
             : "text-gray-500 hover:bg-gray-200 hover:text-gray-900"
         )}
         onMouseEnter={handleMouseEnter}
@@ -76,7 +76,7 @@ export function Sidebar({ items }: SidebarProps) {
   const pathname = usePathname();
 
   return (
-    <aside className="w-14 border-r border-gray-200 bg-gray-50 h-[calc(100vh-3.5rem)] flex flex-col items-center py-4 gap-2 sticky top-14 z-20">
+    <aside className="w-14 border-r border-gray-200 bg-gray-50 fixed top-14 left-0 h-[calc(100vh-3.5rem)] flex flex-col items-center py-4 gap-2 z-20">
       {items.map((item) => {
         const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
         return <SidebarLink key={item.href} item={item} isActive={isActive} />;

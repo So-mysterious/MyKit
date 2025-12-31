@@ -18,11 +18,10 @@ import {
   BookkeepingKind,
 } from "@/lib/bookkeeping/actions";
 import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
-import ImportSection from "./components/ImportSection";
 import ExportSection from "./components/ExportSection";
 import { CurrencyRateRow } from "@/types/database";
 import { Database } from "@/types/database";
-import { Camera, Download, Upload, FileSpreadsheet, FileText, RefreshCw, DollarSign } from "lucide-react";
+import { Camera, Download, FileSpreadsheet, FileText, RefreshCw, DollarSign } from "lucide-react";
 import { formatAmount } from "@/lib/bookkeeping/useSettings";
 
 type TagRow = Database["public"]["Tables"]["bookkeeping_tags"]["Row"];
@@ -111,6 +110,8 @@ export default function SettingsPage() {
 
   // Accounts State (for ExportSection)
   const [accounts, setAccounts] = React.useState<any[]>([]);
+
+
 
   const fetchData = React.useCallback(async () => {
     setLoading(true);
@@ -202,10 +203,13 @@ export default function SettingsPage() {
         is_active: tagForm.is_active,
       });
       setTagForm(DEFAULT_TAG_FORM);
-      await cache.invalidateAndRefresh(['allTags', 'tags']); // ✅ 两个都要失效
-    } catch (error) {
-      console.error(error);
-      alert("新增标签失败");
+      await cache.invalidateAndRefresh(['allTags', 'tags']);
+      // ✅ 从缓存获取最新数据并更新本地状态
+      const freshTags = await cache.getAllTags();
+      setTags(freshTags);
+    } catch (error: any) {
+      console.error('创建标签失败:', error);
+      alert(error.message || "新增标签失败");
     } finally {
       setCreatingTag(false);
     }
@@ -215,7 +219,10 @@ export default function SettingsPage() {
     setUpdatingTagId(tag.id);
     try {
       await updateTag(tag.id, { is_active: !tag.is_active });
-      await cache.invalidateAndRefresh(['allTags', 'tags']); // ✅ 两个都要失效
+      await cache.invalidateAndRefresh(['allTags', 'tags']);
+      // ✅ 从缓存获取最新数据并更新本地状态
+      const freshTags = await cache.getAllTags();
+      setTags(freshTags);
     } catch (error) {
       console.error(error);
       alert("更新标签状态失败");
@@ -229,7 +236,10 @@ export default function SettingsPage() {
     setDeletingTagId(tag.id);
     try {
       await deleteTag(tag.id);
-      await cache.invalidateAndRefresh(['allTags', 'tags']); // ✅ 两个都要失效
+      await cache.invalidateAndRefresh(['allTags', 'tags']);
+      // ✅ 从缓存获取最新数据并更新本地状态
+      const freshTags = await cache.getAllTags();
+      setTags(freshTags);
     } catch (error) {
       console.error(error);
       alert("删除标签失败");
@@ -613,25 +623,6 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      {/* Data Export/Import Section */}
-      <section className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm space-y-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-semibold text-purple-600 uppercase tracking-wider">Data Management</p>
-            <h2 className="text-xl font-bold text-gray-900 mt-1">数据导入导出</h2>
-            <p className="text-sm text-gray-500 mt-1">
-              导入外部账单数据或导出您的流水和快照数据。
-            </p>
-          </div>
-        </div>
-
-        {/* 导入导出组件 */}
-        <div className="grid gap-6 md:grid-cols-2">
-          <ImportSection />
-          <ExportSection accounts={accounts} />
-        </div>
-      </section>
-
       {/* Currency Rates Section */}
       <section className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm space-y-6">
         <div className="flex items-start justify-between gap-4">
@@ -824,6 +815,8 @@ export default function SettingsPage() {
           设置数据加载中...
         </div>
       )}
+
+
     </div>
   );
 }

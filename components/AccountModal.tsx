@@ -32,7 +32,7 @@ interface AccountModalProps {
 export function AccountModal({ trigger, mode = 'create', initialData, onSuccess }: AccountModalProps) {
   const [open, setOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
-  
+
   // Form States
   const [name, setName] = React.useState(initialData?.name || "");
   const [type, setType] = React.useState<AccountType>(initialData?.type || "Checking");
@@ -49,17 +49,17 @@ export function AccountModal({ trigger, mode = 'create', initialData, onSuccess 
       }
       setOpen(false);
       if (!initialData) {
-          // Reset form only on create
-          setName("");
-          setType("Checking");
-          setCurrency("CNY");
+        // Reset form only on create
+        setName("");
+        setType("Checking");
+        setCurrency("CNY");
       }
       onSuccess?.();
     } catch (error) {
-        console.error(error);
-        alert("操作失败，请重试");
+      console.error(error);
+      alert("操作失败，请重试");
     } finally {
-        setSubmitting(false);
+      setSubmitting(false);
     }
   };
 
@@ -79,7 +79,7 @@ export function AccountModal({ trigger, mode = 'create', initialData, onSuccess 
             {mode === 'create' ? '添加一个新的资金账户。' : '修改账户基本信息。'}
           </DialogDescription>
         </DialogHeader>
-        
+
         <form onSubmit={handleSubmit} className="space-y-4 py-4">
           <div className="space-y-2">
             <Label htmlFor="name">账户名称</Label>

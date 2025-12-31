@@ -111,6 +111,54 @@ export interface Database {
         }
         Relationships: []
       }
+      import_batches: {
+        Row: {
+          id: string
+          created_at: string
+          filename: string
+          total_rows: number
+          valid_count: number
+          duplicate_count: number
+          invalid_count: number
+          uploaded_count: number
+          status: 'completed' | 'partial' | 'failed' | 'rolled_back'
+          transaction_ids: string[]
+          error_summary: Json | null
+          upload_duration_ms: number | null
+          user_notes: string | null
+        }
+        Insert: {
+          id?: string
+          created_at?: string
+          filename: string
+          total_rows: number
+          valid_count: number
+          duplicate_count: number
+          invalid_count: number
+          uploaded_count: number
+          status: 'completed' | 'partial' | 'failed' | 'rolled_back'
+          transaction_ids?: string[]
+          error_summary?: Json | null
+          upload_duration_ms?: number | null
+          user_notes?: string | null
+        }
+        Update: {
+          id?: string
+          created_at?: string
+          filename?: string
+          total_rows?: number
+          valid_count?: number
+          duplicate_count?: number
+          invalid_count?: number
+          uploaded_count?: number
+          status?: 'completed' | 'partial' | 'failed' | 'rolled_back'
+          transaction_ids?: string[]
+          error_summary?: Json | null
+          upload_duration_ms?: number | null
+          user_notes?: string | null
+        }
+        Relationships: []
+      }
       periodic_tasks: {
         Row: {
           id: string
