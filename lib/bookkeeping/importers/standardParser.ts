@@ -53,10 +53,24 @@ export interface ParseResult {
 }
 
 // ============================================
-// 标准表头
+// 标准表头（必填 + 可选）
 // ============================================
 
-const STANDARD_HEADERS = ['日期', '类型', '金额', '账户', '分类', '备注', '对方账户', '对方金额'];
+const REQUIRED_HEADERS = ['日期', '类型', '金额', '账户'];
+const OPTIONAL_HEADERS = ['分类', '备注', '对方账户', '对方金额'];
+const ALL_HEADERS = [...REQUIRED_HEADERS, ...OPTIONAL_HEADERS];
+
+// 列索引映射类型
+interface ColumnMap {
+    日期: number;
+    类型: number;
+    金额: number;
+    账户: number;
+    分类: number;
+    备注: number;
+    对方账户: number;
+    对方金额: number;
+}
 
 // ============================================
 // 解析Excel文件
@@ -83,11 +97,31 @@ export async function parseStandardExcel(file: File): Promise<ParseResult> {
         throw new Error('Excel文件至少需要表头和一行数据');
     }
 
-    // 验证表头
+    // ✅ 灵活的表头解析：按名称映射列索引
     const headerRow = rows[0].map(h => String(h).trim());
-    const missingHeaders = STANDARD_HEADERS.filter((h, i) => headerRow[i] !== h);
+
+    // 构建列名到索引的映射
+    const columnMap: ColumnMap = {
+        日期: -1,
+        类型: -1,
+        金额: -1,
+        账户: -1,
+        分类: -1,
+        备注: -1,
+        对方账户: -1,
+        对方金额: -1,
+    };
+
+    headerRow.forEach((header, index) => {
+        if (header in columnMap) {
+            columnMap[header as keyof ColumnMap] = index;
+        }
+    });
+
+    // 检查必填列是否存在
+    const missingHeaders = REQUIRED_HEADERS.filter(h => columnMap[h as keyof ColumnMap] === -1);
     if (missingHeaders.length > 0) {
-        throw new Error(`表头不匹配，期望: ${STANDARD_HEADERS.join(', ')}`);
+        throw new Error(`缺少必填列: ${missingHeaders.join(', ')}。支持的列名: ${ALL_HEADERS.join(', ')}`);
     }
 
     // 获取数据库中的账户和标签
@@ -102,9 +136,50 @@ export async function parseStandardExcel(file: File): Promise<ParseResult> {
     const accounts = accountsResult.data || [];
     const tags = tagsResult.data || [];
 
+    // ✅ 统一中英文符号的标准化函数（用于模糊匹配）
+    function normalizeSymbols(str: string): string {
+        return str
+            // 移除所有空白字符（空格、制表符、全角空格等）
+            .replace(/[\s\u3000]+/g, '')
+            // 中文标点 → 英文标点
+            .replace(/（/g, '(')
+            .replace(/）/g, ')')
+            .replace(/【/g, '[')
+            .replace(/】/g, ']')
+            .replace(/｛/g, '{')
+            .replace(/｝/g, '}')
+            .replace(/，/g, ',')
+            .replace(/。/g, '.')
+            .replace(/：/g, ':')
+            .replace(/；/g, ';')
+            .replace(/？/g, '?')
+            .replace(/！/g, '!')
+            // 引号统一
+            .replace(/[""「」『』]/g, '"')
+            .replace(/['']/g, "'")
+            // 破折号统一
+            .replace(/[—–－]/g, '-')
+            // 全角数字字母 → 半角
+            .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+            .replace(/[Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+            // 转小写（可选，用于更宽松的匹配）
+            .toLowerCase()
+            .trim();
+    }
+
+    // 原始账户映射
     const accountMap = new Map(accounts.map(a => [a.name, a.id]));
+    // ✅ 标准化后的账户映射（用于模糊匹配）
+    const normalizedAccountMap = new Map(accounts.map(a => [normalizeSymbols(a.name), { id: a.id, originalName: a.name }]));
     const accountIdToName = new Map(accounts.map(a => [a.id, a.name]));
-    const tagSet = new Set(tags.map(t => t.name));
+
+    // ✅ 按类型分组的标签集合
+    const tagsByKind = {
+        expense: new Set(tags.filter(t => t.kind === 'expense').map(t => t.name)),
+        income: new Set(tags.filter(t => t.kind === 'income').map(t => t.name)),
+        transfer: new Set(tags.filter(t => t.kind === 'transfer').map(t => t.name)),
+    };
+    const allTagSet = new Set(tags.map(t => t.name));
 
     // 获取现有流水用于重复检测（包含category）
     const { data: existingTransactions } = await supabase
@@ -179,7 +254,7 @@ export async function parseStandardExcel(file: File): Promise<ParseResult> {
         }
 
         // ✅ 使用带错误追踪的解析
-        const parseResult = tryParseRow(row, rowNum);
+        const parseResult = tryParseRow(row, rowNum, columnMap);
 
         if (parseResult.error) {
             // 解析失败，记录错误，创建一个基础的ParsedRow用于显示
@@ -207,7 +282,7 @@ export async function parseStandardExcel(file: File): Promise<ParseResult> {
         const parsed = parseResult.data!;
 
         // 验证
-        const errors = validateRow(parsed, accountMap, tagSet);
+        const errors = validateRow(parsed, accountMap, normalizedAccountMap, tagsByKind, normalizeSymbols);
 
         if (errors.length > 0) {
             result.invalid.push(parsed);
@@ -215,8 +290,17 @@ export async function parseStandardExcel(file: File): Promise<ParseResult> {
             continue;
         }
 
-        // 转换为ValidTransaction
-        const accountId = accountMap.get(parsed.account)!;
+        // ✅ 转换为ValidTransaction（使用标准化账户匹配）
+        const getAccountId = (name: string): string | undefined => {
+            // 先尝试精确匹配
+            if (accountMap.has(name)) return accountMap.get(name);
+            // 再尝试标准化匹配
+            const normalized = normalizeSymbols(name);
+            const match = normalizedAccountMap.get(normalized);
+            return match?.id;
+        };
+
+        const accountId = getAccountId(parsed.account)!;
         const typeMap: Record<string, 'income' | 'expense' | 'transfer'> = {
             '收入': 'income',
             '支出': 'expense',
@@ -235,7 +319,7 @@ export async function parseStandardExcel(file: File): Promise<ParseResult> {
         };
 
         if (parsed.type === '划转' && parsed.toAccount) {
-            validTx.toAccountId = accountMap.get(parsed.toAccount);
+            validTx.toAccountId = getAccountId(parsed.toAccount);
             validTx.toAccountName = parsed.toAccount;
             validTx.toAmount = parsed.toAmount || parsed.amount;
         }
@@ -327,34 +411,71 @@ interface ParseRowResult {
     };
 }
 
-function tryParseRow(row: string[], rowNum: number): ParseRowResult {
-    const [dateStr, typeStr, amountStr, account, category, description, toAccount, toAmountStr] = row;
+function tryParseRow(row: string[], rowNum: number, columnMap: ColumnMap): ParseRowResult {
+    // ✅ 使用 columnMap 灵活获取列值
+    const getCell = (key: keyof ColumnMap) => {
+        const index = columnMap[key];
+        return index >= 0 ? String(row[index] || '').trim() : '';
+    };
+
+    const dateStr = getCell('日期');
+    const typeStr = getCell('类型');
+    const amountStr = getCell('金额');
+    const account = getCell('账户');
+    const category = getCell('分类');
+    const description = getCell('备注');
+    const toAccount = getCell('对方账户');
+    const toAmountStr = getCell('对方金额');
 
     // 解析日期（保留时间部分）
     let date = '';
     if (dateStr) {
-        const d = String(dateStr).trim().replace(/\//g, '-');
-        // 验证日期格式 (支持 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS)
-        if (/^\d{4}-\d{1,2}-\d{1,2}/.test(d)) {
-            // 分离日期和时间部分
-            const [datePart, timePart] = d.split(' ');
-            const parts = datePart.split('-');
-            if (parts.length >= 3) {
-                // 补齐月和日的0
-                const formattedDate = `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+        let d = String(dateStr).trim().replace(/\//g, '-');
 
-                // ✅ 如果有时间部分，保留它
-                if (timePart && /^\d{1,2}:\d{2}(:\d{2})?$/.test(timePart)) {
-                    // 格式化时间部分 (补齐秒)
-                    const timeParts = timePart.split(':');
-                    const hours = timeParts[0].padStart(2, '0');
-                    const minutes = timeParts[1].padStart(2, '0');
-                    const seconds = timeParts[2]?.padStart(2, '0') || '00';
-                    date = `${formattedDate}T${hours}:${minutes}:${seconds}`;
-                } else {
-                    // 没有时间部分，只保存日期（不添加默认时间）
-                    date = formattedDate;
-                }
+        // 分离日期和时间部分
+        const [rawDatePart, timePart] = d.split(' ');
+        let datePart = rawDatePart;
+
+        // ✅ 检测日期格式：YYYY-MM-DD 或 MM-DD-YY
+        const parts = datePart.split('-');
+        if (parts.length >= 3) {
+            let year: string, month: string, day: string;
+
+            if (parts[0].length === 4) {
+                // YYYY-MM-DD 格式
+                year = parts[0];
+                month = parts[1].padStart(2, '0');
+                day = parts[2].padStart(2, '0');
+            } else if (parts[2].length === 2) {
+                // MM-DD-YY 格式（如 10/31/25）
+                month = parts[0].padStart(2, '0');
+                day = parts[1].padStart(2, '0');
+                // 两位年份转四位（假设 00-99 → 2000-2099）
+                year = '20' + parts[2];
+            } else if (parts[2].length === 4) {
+                // MM-DD-YYYY 格式
+                month = parts[0].padStart(2, '0');
+                day = parts[1].padStart(2, '0');
+                year = parts[2];
+            } else {
+                year = parts[0];
+                month = parts[1].padStart(2, '0');
+                day = parts[2].padStart(2, '0');
+            }
+
+            const formattedDate = `${year}-${month}-${day}`;
+
+            // ✅ 如果有时间部分，保留它
+            if (timePart && /^\d{1,2}:\d{2}(:\d{2})?$/.test(timePart)) {
+                // 格式化时间部分 (补齐秒)
+                const timeParts = timePart.split(':');
+                const hours = timeParts[0].padStart(2, '0');
+                const minutes = timeParts[1].padStart(2, '0');
+                const seconds = timeParts[2]?.padStart(2, '0') || '00';
+                date = `${formattedDate}T${hours}:${minutes}:${seconds}`;
+            } else {
+                // 没有时间部分，只保存日期
+                date = formattedDate;
             }
         }
     }
@@ -364,7 +485,7 @@ function tryParseRow(row: string[], rowNum: number): ParseRowResult {
             error: {
                 field: '日期',
                 value: String(dateStr || '').substring(0, 50),
-                reason: '日期格式无法解析，应为 YYYY-MM-DD 或 YYYY/MM/DD',
+                reason: '日期格式无法解析，支持: YYYY-MM-DD, YYYY/MM/DD, MM/DD/YY',
             },
         };
     }
@@ -423,12 +544,6 @@ function tryParseRow(row: string[], rowNum: number): ParseRowResult {
     };
 }
 
-// 保留parseRow作为简化版本（用于其他可能的用途）
-function parseRow(row: string[], rowNum: number): ParsedRow | null {
-    const result = tryParseRow(row, rowNum);
-    return result.data || null;
-}
-
 // ============================================
 // 验证单行
 // ============================================
@@ -436,23 +551,52 @@ function parseRow(row: string[], rowNum: number): ParsedRow | null {
 function validateRow(
     row: ParsedRow,
     accountMap: Map<string, string>,
-    tagSet: Set<string>
+    normalizedAccountMap: Map<string, { id: string; originalName: string }>,
+    tagsByKind: { expense: Set<string>; income: Set<string>; transfer: Set<string> },
+    normalizeSymbols: (str: string) => string
 ): ValidationError[] {
     const errors: ValidationError[] = [];
 
-    // 验证账户
+    // ✅ 账户存在性检查（支持中英文符号模糊匹配）
+    const accountExists = (name: string): boolean => {
+        if (accountMap.has(name)) return true;
+        const normalized = normalizeSymbols(name);
+        return normalizedAccountMap.has(normalized);
+    };
+
     if (!row.account) {
         errors.push({ row: row.row, field: '账户', value: '', reason: '账户不能为空' });
-    } else if (!accountMap.has(row.account)) {
+    } else if (!accountExists(row.account)) {
         errors.push({ row: row.row, field: '账户', value: row.account, reason: '账户不存在于数据库' });
     }
 
-    // 验证分类（非划转类型必填）
+    // ✅ 验证分类（检查标签是否属于正确的类型）
     if (row.type !== '划转') {
         if (!row.category) {
             errors.push({ row: row.row, field: '分类', value: '', reason: '支出/收入类型必须填写分类' });
-        } else if (!tagSet.has(row.category)) {
-            errors.push({ row: row.row, field: '分类', value: row.category, reason: '分类不存在于数据库' });
+        } else {
+            // 根据交易类型检查标签是否属于正确的分组
+            const typeToKind: Record<string, 'expense' | 'income'> = {
+                '支出': 'expense',
+                '收入': 'income',
+            };
+            const expectedKind = typeToKind[row.type];
+            const validTagSet = tagsByKind[expectedKind];
+
+            if (!validTagSet.has(row.category)) {
+                // 检查是否存在于其他类型
+                const allTags = new Set([...tagsByKind.expense, ...tagsByKind.income, ...tagsByKind.transfer]);
+                if (allTags.has(row.category)) {
+                    errors.push({
+                        row: row.row,
+                        field: '分类',
+                        value: row.category,
+                        reason: `「${row.category}」不是${row.type}类型的标签`
+                    });
+                } else {
+                    errors.push({ row: row.row, field: '分类', value: row.category, reason: '分类不存在于数据库' });
+                }
+            }
         }
     }
 
@@ -460,9 +604,9 @@ function validateRow(
     if (row.type === '划转') {
         if (!row.toAccount) {
             errors.push({ row: row.row, field: '对方账户', value: '', reason: '划转类型必须填写对方账户' });
-        } else if (!accountMap.has(row.toAccount)) {
+        } else if (!accountExists(row.toAccount)) {
             errors.push({ row: row.row, field: '对方账户', value: row.toAccount, reason: '对方账户不存在于数据库' });
-        } else if (row.toAccount === row.account) {
+        } else if (normalizeSymbols(row.toAccount) === normalizeSymbols(row.account)) {
             errors.push({ row: row.row, field: '对方账户', value: row.toAccount, reason: '对方账户不能与账户相同' });
         }
     }
