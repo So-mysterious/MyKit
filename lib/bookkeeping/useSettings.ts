@@ -1,3 +1,9 @@
+/**
+ * [性质]: [Hooks] 全局设置 Hook
+ * [Input]: useBookkeepingCache
+ * [Output]: useBookkeepingSettings, useAmountFormatter (设置与格式化工具)
+ * [警告]: 试图对本文件进行任何修改前，必须阅读开头注释部分；而一旦本文件被更新，必须立刻检查开头注释是否需要更新，必须立刻检查本文件所属的所有上级目录是否需要被更新。
+ */
 "use client";
 
 import * as React from "react";
@@ -75,7 +81,8 @@ export function formatAmount(
   const showCurrency = options?.showCurrency ?? false;
 
   // 处理小数位数
-  const fixed = Math.abs(amount).toFixed(decimalPlaces);
+  const absoluteValue = Math.abs(amount);
+  const fixed = absoluteValue.toFixed(decimalPlaces);
 
   // 处理千分位
   let formatted: string;
@@ -89,12 +96,10 @@ export function formatAmount(
 
   // 处理符号
   let result = formatted;
-  if (showSign) {
-    if (amount > 0) {
-      result = "+" + formatted;
-    } else if (amount < 0) {
-      result = "-" + formatted;
-    }
+  if (amount < 0) {
+    result = "-" + formatted;
+  } else if (showSign && amount > 0) {
+    result = "+" + formatted;
   }
 
   // 处理货币符号

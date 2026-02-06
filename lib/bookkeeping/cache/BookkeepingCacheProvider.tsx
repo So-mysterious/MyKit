@@ -1,3 +1,9 @@
+/**
+ * [性质]: [Context] 记账模块全局缓存 Provider
+ * [Input]: Server Actions (bookkeeping/actions)
+ * [Output]: BookkeepingCacheContext (全局状态与数据获取)
+ * [警告]: 试图对本文件进行任何修改前，必须阅读开头注释部分；而一旦本文件被更新，必须立刻检查开头注释是否需要更新，必须立刻检查本文件所属的所有上级目录是否需要被更新。
+ */
 "use client";
 
 import * as React from "react";
@@ -26,12 +32,12 @@ interface CacheData {
     accounts: CacheEntry<any[]> | null;
     tags: CacheEntry<any[]> | null;                      // active tags only
     allTags: CacheEntry<any[]> | null;                   // all tags (包括停用)
-    transactions: CacheEntry<any[]> | null;
+    transactions: CacheEntry<{ transactions: any[]; total: number }> | null;
     budgetPlans: CacheEntry<any[]> | null;
     periodicTasks: CacheEntry<any[]> | null;
     reconciliationIssues: CacheEntry<any[]> | null;
     bookkeepingSettings: CacheEntry<any> | null;
-    currencyRates: CacheEntry<any[]> | null;
+    currencyRates: CacheEntry<Record<string, Record<string, number>>> | null;
     dashboardTransactions: CacheEntry<any[]> | null;      // ✅ Dashboard专用：1年内流水
     dashboardBudgetData: CacheEntry<any> | null;         // ✅ Dashboard预算数据
     heatmapAggregation: CacheEntry<{                     // ✅ Heatmap聚合数据
@@ -47,18 +53,19 @@ interface BookkeepingCacheContextValue {
     getAccounts: (options?: { includeBalance?: boolean }) => Promise<any[]>;
     getTags: () => Promise<any[]>;                                          // active tags only
     getAllTags: () => Promise<any[]>;                                       // all tags
-    getTransactions: (options?: any) => Promise<any[]>;
+    getTransactions: (options?: any) => Promise<{ transactions: any[]; total: number }>;
     getBudgetPlans: (options?: any) => Promise<any[]>;
     getPeriodicTasks: () => Promise<any[]>;
     getReconciliationIssues: (status?: 'open' | 'resolved') => Promise<any[]>;
     getBookkeepingSettings: () => Promise<any>;
-    getCurrencyRates: () => Promise<any[]>;
+    getCurrencyRates: () => Promise<Record<string, Record<string, number>>>;
     getDashboardTransactions: () => Promise<any[]>;                         // Dashboard专用流水
     getDashboardBudgetData: () => Promise<any>;                             // Dashboard预算数据
-    getHeatmapAggregation: () => Promise<{                                  // Heatmap聚合
+    getHeatmapAggregation: (filterAccountId?: string) => Promise<{                                  // Heatmap聚合
         dataMap: Map<string, number>;
         stats: { mean: number; stdDev: number };
     }>;
+    getBalanceHistory: (accountId: string, days?: number) => Promise<{ history: Array<{ date: string; balance: number }>; currency: string }>;
 
     // Cache invalidation
     invalidate: (keys: CacheKey[]) => void;
@@ -422,22 +429,28 @@ export function BookkeepingCacheProvider({ children }: { children: React.ReactNo
         }
     }, [isExpired, updateCache]); // ✅ 只依赖稳定的函数
 
-    // 获取heatmapAggregation (带缓存，稳定引用) - 复杂聚合计算
-    const getCachedHeatmapAggregation = React.useCallback(async () => {
-        const cacheKey: CacheKey = 'heatmapAggregation';
+    // 获取Heatmap聚合数据 (稳定引用)
+    const getCachedHeatmapAggregation = React.useCallback(async (filterAccountId?: string) => {
+        const cacheKey = filterAccountId ? `heatmapAggregation_${filterAccountId}` as CacheKey : 'heatmapAggregation' as CacheKey;
 
         if (!isExpired(cacheKey)) {
             const cachedData = cacheRef.current[cacheKey]!.data;
             // ✅ 防御性检查：确保dataMap是Map对象
             if (cachedData?.dataMap && !(cachedData.dataMap instanceof Map)) {
-                console.warn('⚠️ heatmapAggregation cache has non-Map dataMap, reconstructing...', typeof cachedData.dataMap);
                 // 如果不是Map，尝试从数组重建
                 if (Array.isArray(cachedData.dataMap)) {
                     cachedData.dataMap = new Map(cachedData.dataMap);
+                } else if (typeof cachedData.dataMap === 'object') {
+                    // 可能是普通对象，尝试从entries重建
+                    try {
+                        cachedData.dataMap = new Map(Object.entries(cachedData.dataMap));
+                    } catch {
+                        // 重建失败，清空缓存让其重新计算
+                        cacheRef.current[cacheKey] = null;
+                    }
                 } else {
-                    // 数据损坏，重新计算
-                    console.error('❌ Invalid dataMap type, forcing recalculation');
-                    cacheRef.current[cacheKey] = null; // 清空缓存
+                    // 数据损坏，重新计算（静默处理）
+                    cacheRef.current[cacheKey] = null;
                 }
             }
             if (cachedData?.dataMap instanceof Map) {
@@ -449,7 +462,15 @@ export function BookkeepingCacheProvider({ children }: { children: React.ReactNo
         setLoading(prev => ({ ...prev, [cacheKey]: true }));
         try {
             // 从dashboardTransactions缓存获取数据
-            const transactions = await getCachedDashboardTransactions();
+            let transactions = await getCachedDashboardTransactions();
+
+            // 如果有账户过滤
+            if (filterAccountId) {
+                transactions = transactions.filter(tx =>
+                    tx.from_account_id === filterAccountId ||
+                    tx.to_account_id === filterAccountId
+                );
+            }
 
             const map = new Map<string, number>();
             const values: number[] = [];
@@ -458,8 +479,12 @@ export function BookkeepingCacheProvider({ children }: { children: React.ReactNo
             transactions.forEach((tx: any) => {
                 const date = new Date(tx.date);
                 const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-                // Net amount: income is positive, expense is negative
-                const amount = tx.type === 'expense' ? -Math.abs(tx.amount) : (tx.type === 'income' ? tx.amount : 0);
+                // Net amount: income/opening is positive, expense is negative
+                let amount = 0;
+                if (tx.type === 'expense') amount = -Math.abs(tx.amount);
+                else if (tx.type === 'income') amount = Math.abs(tx.amount);
+                else if (tx.type === 'opening') amount = Number(tx.amount); // 期初余额直接使用原始金额
+                else amount = 0; // 转账不计入净值变化
 
                 const current = map.get(dateStr) || 0;
                 const next = current + amount;
@@ -471,17 +496,29 @@ export function BookkeepingCacheProvider({ children }: { children: React.ReactNo
                 if (val !== 0) values.push(val);
             });
 
-            // 计算均值和标准差
+            // 辅助函数：计算中位数
+            const getMedian = (arr: number[]) => {
+                const sorted = [...arr].sort((a, b) => a - b);
+                const mid = Math.floor(sorted.length / 2);
+                return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+            };
+
+            // 计算强健统计量 (MAD - Median Absolute Deviation)
+            // 解决大额极端值（如几百万收入）拉高标准差导致日常交易变 level 0 的问题
             let mean = 0;
-            let stdDev = 0;
+            let stdDev = 0; // 这里的 stdDev 将被指代为强健标准差 (1.4826 * MAD)
 
             if (values.length > 0) {
-                const sum = values.reduce((a, b) => a + b, 0);
-                mean = sum / values.length;
+                const median = getMedian(values);
+                const absoluteDeviations = values.map(v => Math.abs(v - median));
+                const mad = getMedian(absoluteDeviations);
 
-                const squareDiffs = values.map(v => Math.pow(v - mean, 2));
-                const avgSquareDiff = squareDiffs.reduce((a, b) => a + b, 0) / values.length;
-                stdDev = Math.sqrt(avgSquareDiff);
+                // 1.4826 是正态分布下 MAD 到标准差的转换因子
+                // 即使分布不正态，这也是一个非常好的强健尺度估计
+                const robustStdDev = mad === 0 ? 1 : mad * 1.4826;
+
+                mean = median; // 使用中位数作为中心趋势更强健
+                stdDev = robustStdDev;
             }
 
             const data = { dataMap: map, stats: { mean, stdDev } };
@@ -568,7 +605,7 @@ export function BookkeepingCacheProvider({ children }: { children: React.ReactNo
         return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
     }, [isExpired, invalidateAndRefresh]); // ✅ 依赖稳定的函数
 
-    const value: BookkeepingCacheContextValue = {
+    const value = React.useMemo(() => ({
         getAccounts: getCachedAccounts,
         getTags: getCachedTags,
         getAllTags: getCachedAllTags,
@@ -578,13 +615,23 @@ export function BookkeepingCacheProvider({ children }: { children: React.ReactNo
         getReconciliationIssues: getCachedReconciliationIssues,
         getBookkeepingSettings: getCachedBookkeepingSettings,
         getCurrencyRates: getCachedCurrencyRates,
-        getDashboardTransactions: getCachedDashboardTransactions,  // ✅ Dashboard专用流水
-        getDashboardBudgetData: getCachedDashboardBudgetData,      // ✅ Dashboard预算数据
-        getHeatmapAggregation: getCachedHeatmapAggregation,        // ✅ Heatmap聚合数据
+        getDashboardTransactions: getCachedDashboardTransactions,
+        getDashboardBudgetData: getCachedDashboardBudgetData,
+        getHeatmapAggregation: getCachedHeatmapAggregation,
+        getBalanceHistory: async (accountId: string, days: number = 30) => {
+            const { getBalanceHistory: getHist } = await import("@/lib/bookkeeping/actions");
+            return getHist(accountId, days);
+        },
         invalidate,
         invalidateAndRefresh,
         loading,
-    };
+    }), [
+        getCachedAccounts, getCachedTags, getCachedAllTags, getCachedTransactions,
+        getCachedBudgetPlans, getCachedPeriodicTasks, getCachedReconciliationIssues,
+        getCachedBookkeepingSettings, getCachedCurrencyRates, getCachedDashboardTransactions,
+        getCachedDashboardBudgetData, getCachedHeatmapAggregation, invalidate,
+        invalidateAndRefresh, loading
+    ]);
 
     return (
         <BookkeepingCacheContext.Provider value={value}>

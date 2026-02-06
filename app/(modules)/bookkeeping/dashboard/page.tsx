@@ -1,9 +1,15 @@
+/**
+ * [性质]: [页面] 仪表盘 (图表汇总)
+ * [Input]: None
+ * [Output]: Page UI
+ * [警告]: 试图对本文件进行任何修改前，必须阅读开头注释部分；而一旦本文件被更新，必须立刻检查开头注释是否需要更新，必须立刻检查本文件所属的所有上级目录是否需要被更新。
+ */
 "use client";
 
 import * as React from "react";
-import { Heatmap } from "./components/Heatmap";
-import { TransactionExplorer } from "./components/TransactionExplorer";
-import { LifeRecipe } from "./components/LifeRecipe";
+import { Heatmap } from "@/components/bookkeeping/charts/Heatmap";
+import { TransactionExplorer } from "@/components/bookkeeping/charts/TransactionExplorer";
+import { LifeRecipe } from "@/components/bookkeeping/charts/LifeRecipe";
 import { BudgetTracker } from "./components/BudgetTracker";
 import { getTodayCheckin, handleDailyCheckin } from "@/lib/bookkeeping/actions";
 import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";

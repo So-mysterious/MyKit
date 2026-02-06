@@ -1,271 +1,314 @@
+-- ============================================================================
+-- MyKit 数据库结构定义
+-- 版本: 2.1
+-- 日期: 2026-02-02
+-- 说明: 完整复式记账体系，采用"校准优先"余额计算模式
+-- ============================================================================
+
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 1. Accounts Table (账户表)
--- 存储账户基础信息，不存储余额（余额通过计算获得）
+-- ============================================================================
+-- 第一部分：核心业务表
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- 1.1 账户表 (accounts)
+-- 统一管理真实账户（银行卡、信用卡）和虚账户（费用、收入类别）
+-- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS accounts (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+    -- 层级关系
+    parent_id UUID REFERENCES accounts(id) ON DELETE RESTRICT,
+    
+    -- 基本信息
     name TEXT NOT NULL,
-    type TEXT NOT NULL, -- 'Checking', 'Credit', 'Asset', 'Wallet'
-    currency TEXT NOT NULL, -- 'CNY', 'HKD', 'USDT'
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-    -- 信用卡专属字段 (平铺)
-    statement_date INTEGER, -- 账单日 (1-31)
-    due_date INTEGER, -- 还款日 (1-31)
-    credit_limit DECIMAL(20, 4) -- 信用额度
-);
-
--- 2. Transactions Table (流水表)
--- 核心表：记录收入、支出、划转
--- 划转逻辑：一笔划转包含两条记录（一正一负），通过 transfer_group_id 关联
-CREATE TABLE IF NOT EXISTS transactions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    type TEXT NOT NULL, -- 'income', 'expense', 'transfer'
-    amount DECIMAL(20, 4) NOT NULL, -- 支出为负，收入为正
-    category TEXT NOT NULL, -- 硬编码分类字符串，如 '餐饮', '交通'
-    description TEXT, -- 备注
-    date TIMESTAMP WITH TIME ZONE NOT NULL, -- 交易发生时间
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    full_path TEXT,  -- 缓存完整路径，如 "资产:银行账户:招商银行"
     
-    -- 跨币种/换汇扩展字段
-    nominal_amount DECIMAL(20, 4), -- 名义金额 (e.g. 1000)
-    nominal_currency TEXT, -- 名义币种 (e.g. 'HKD')
+    -- 账户分类
+    account_class TEXT NOT NULL CHECK (account_class IN ('real', 'nominal')),
+    -- real: 真实账户（银行卡、信用卡、现金等）
+    -- nominal: 虚账户（费用类别、收入类别，前端展示为"标签"）
     
-    -- 划转关联
-    transfer_group_id UUID -- 同一笔划转的两条记录共享此ID
+    type TEXT NOT NULL CHECK (type IN ('asset', 'liability', 'income', 'expense', 'equity')),
+    -- asset: 资产（银行卡、现金、投资）
+    -- liability: 负债（信用卡、贷款）
+    -- income: 收入（工资、投资收益等）
+    -- expense: 费用（餐饮、交通等）
+    -- equity: 权益（期初余额等系统账户）
+    
+    subtype TEXT,  -- 细分类型
+    -- asset: 'cash', 'checking', 'savings', 'investment', 'receivable'
+    -- liability: 'credit_card', 'loan', 'payable'
+    -- income/expense: NULL（由名称区分）
+    
+    -- 账户属性
+    is_group BOOLEAN NOT NULL DEFAULT FALSE,  -- 是否为分组（分组不能直接记账）
+    is_system BOOLEAN NOT NULL DEFAULT FALSE, -- 系统预设（不可删除）
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,  -- 是否启用
+    
+    -- 币种（仅叶子账户，即 is_group=false 的 real 账户需要）
+    currency TEXT,
+    
+    -- 信用卡专属字段
+    credit_limit DECIMAL(20, 4),
+    statement_day INTEGER CHECK (statement_day >= 1 AND statement_day <= 31),
+    due_day INTEGER CHECK (due_day >= 1 AND due_day <= 31),
+    
+    -- 时间戳
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    deactivated_at TIMESTAMP WITH TIME ZONE,
+    
+    -- 排序字段
+    sort_order INTEGER DEFAULT 0,
+    
+    -- 统计缓存字段 (自动更新)
+    transaction_count INTEGER DEFAULT 0,
+    first_transaction_date TIMESTAMP WITH TIME ZONE,
+    last_transaction_date TIMESTAMP WITH TIME ZONE,
+    top_counterparties JSONB DEFAULT '[]'::JSONB,
+    stats_updated_at TIMESTAMP WITH TIME ZONE,
+    
+    -- 约束
+    CONSTRAINT chk_nominal_no_currency CHECK (account_class = 'real' OR currency IS NULL),
+    CONSTRAINT chk_group_no_currency CHECK (is_group = false OR currency IS NULL)
 );
 
--- 3. Snapshots Table (时点价值表)
--- 余额计算基石：每月1号自动生成 + 用户手动校准
-CREATE TABLE IF NOT EXISTS snapshots (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    balance DECIMAL(20, 4) NOT NULL, -- 该时刻的绝对余额
-    date TIMESTAMP WITH TIME ZONE NOT NULL, -- 快照对应的实际时间
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-    type TEXT DEFAULT 'Manual' -- 'Auto' (每月自动), 'Manual' (手动添加)
-);
+-- 账户表索引
+CREATE INDEX IF NOT EXISTS idx_accounts_parent ON accounts(parent_id);
+CREATE INDEX IF NOT EXISTS idx_accounts_type ON accounts(type);
+CREATE INDEX IF NOT EXISTS idx_accounts_class ON accounts(account_class);
+CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(is_active) WHERE is_active = true;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_path ON accounts(full_path) WHERE full_path IS NOT NULL;
 
--- 4. Import Batches Table (导入批次表)
--- 用于追踪和撤销批量导入操作
--- 详见: import_batches_migration.sql
-CREATE TABLE IF NOT EXISTS import_batches (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-    filename TEXT NOT NULL,
-    total_rows INT NOT NULL,
-    valid_count INT NOT NULL,
-    duplicate_count INT NOT NULL,
-    invalid_count INT NOT NULL,
-    uploaded_count INT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('completed', 'partial', 'failed', 'rolled_back')),
-    transaction_ids UUID[] NOT NULL DEFAULT '{}',
-    error_summary JSONB,
-    upload_duration_ms INT,
-    user_notes TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_import_batches_created ON import_batches(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_import_batches_status ON import_batches(status);
-CREATE INDEX IF NOT EXISTS idx_import_batches_transaction_ids ON import_batches USING GIN(transaction_ids);
-
--- 5. Periodic Tasks Table (自动记账配置表)
--- 用于生成定期收支（如月费、工资、定期划转）
-CREATE TABLE IF NOT EXISTS periodic_tasks (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    type TEXT NOT NULL DEFAULT 'expense', -- 'income', 'expense', 'transfer'
-    amount DECIMAL(20, 4) NOT NULL, -- 金额（正数）
-    category TEXT NOT NULL,
+-- ----------------------------------------------------------------------------
+-- 1.2 项目表 (projects)
+-- 用于将交易归类到特定项目（旅游、出差、装修等）
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS projects (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
     description TEXT,
-    frequency TEXT NOT NULL DEFAULT 'monthly', -- daily, weekly, biweekly, monthly, quarterly, yearly, custom_N
-    next_run_date DATE NOT NULL, -- 下一次执行日期
-    is_active BOOLEAN NOT NULL DEFAULT TRUE, -- 是否启用（FALSE 表示暂停）
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-    -- 划转专用字段
-    to_account_id UUID REFERENCES accounts(id) ON DELETE SET NULL, -- 划转目标账户
-    to_amount DECIMAL(20, 4) -- 划转目标金额（跨币种时使用）
+    start_date DATE,
+    end_date DATE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
--- 5. Reconciliation Issues Table (查账提醒)
--- 用于记录任意两个快照之间流水不平的异常段
-CREATE TABLE IF NOT EXISTS reconciliation_issues (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+CREATE INDEX IF NOT EXISTS idx_projects_active ON projects(is_active) WHERE is_active = true;
+
+-- ----------------------------------------------------------------------------
+-- 1.3 交易表 (transactions)
+-- 复式记账核心：每笔交易记录资金从一个账户流向另一个账户
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+    -- 交易时间
+    date TIMESTAMP WITH TIME ZONE NOT NULL,
+    
+    -- 复式记账核心：资金流向
+    from_account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+    to_account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+    
+    -- 金额（期初余额可为负数，其他交易为正数，由应用层验证）
+    amount DECIMAL(20, 4) NOT NULL CHECK (amount != 0),
+    
+    -- 跨币种支持（当 from 和 to 账户币种不同时使用）
+    from_amount DECIMAL(20, 4),  -- from 账户的实际扣除金额
+    to_amount DECIMAL(20, 4),    -- to 账户的实际增加金额
+    
+    -- 描述/备注
+    description TEXT,
+    
+    -- 交易关联（用于代付回款、退款等场景）
+    linked_transaction_id UUID REFERENCES transactions(id) ON DELETE SET NULL,
+    link_type TEXT CHECK (link_type IN ('reimbursement', 'refund', 'split', 'correction')),
+    -- reimbursement: 代付回款
+    -- refund: 退款
+    -- split: 分摊
+    -- correction: 调账/更正
+    
+    -- 期初交易标记
+    is_opening BOOLEAN NOT NULL DEFAULT FALSE,
+    
+    -- 附加属性字段
+    is_large_expense BOOLEAN NOT NULL DEFAULT FALSE,  -- 大额支出（系统自动计算）
+    location TEXT,                                     -- 发生地
+    project_id UUID REFERENCES projects(id) ON DELETE SET NULL,  -- 所属项目
+    is_starred BOOLEAN NOT NULL DEFAULT FALSE,         -- 重要标记
+    needs_review BOOLEAN NOT NULL DEFAULT FALSE,       -- 待核对标记
+    nature TEXT NOT NULL DEFAULT 'regular' CHECK (nature IN ('regular', 'unexpected', 'periodic')),
+    -- regular: 常规交易
+    -- unexpected: 意外/非计划
+    -- periodic: 周期性交易（由周期任务生成）
+    
+    -- 时间戳
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    
+    -- 约束
+    CONSTRAINT chk_different_accounts CHECK (from_account_id != to_account_id)
+);
+
+-- 交易表索引
+CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date DESC);
+CREATE INDEX IF NOT EXISTS idx_transactions_from ON transactions(from_account_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_to ON transactions(to_account_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_project ON transactions(project_id) WHERE project_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_transactions_location ON transactions(location) WHERE location IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_transactions_linked ON transactions(linked_transaction_id) WHERE linked_transaction_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_transactions_opening ON transactions(is_opening) WHERE is_opening = true;
+CREATE INDEX IF NOT EXISTS idx_transactions_starred ON transactions(is_starred) WHERE is_starred = true;
+CREATE INDEX IF NOT EXISTS idx_transactions_review ON transactions(needs_review) WHERE needs_review = true;
+
+-- ----------------------------------------------------------------------------
+-- 1.4 校准表 (calibrations)
+-- 用途：记录用户确认的真实余额，作为余额计算的锚点
+-- 说明：
+--   - 每次校准记录用户在特定日期确认的账户实际余额
+--   - 余额计算时，从最近的校准点正推/倒推得出任意日期的余额
+--   - 查账逻辑比对相邻两次校准差值与期间流水和
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS calibrations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    start_snapshot_id UUID REFERENCES snapshots(id),
-    end_snapshot_id UUID REFERENCES snapshots(id),
+    balance DECIMAL(20, 4) NOT NULL,  -- 用户确认的实际余额
+    date TIMESTAMP WITH TIME ZONE NOT NULL,  -- 校准日期
+    
+    -- 校准来源
+    source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'import')),
+    -- manual: 用户手动校准
+    -- import: 数据导入时创建
+    
+    -- 是否为期初校准（账户创建时的首次校准）
+    is_opening BOOLEAN NOT NULL DEFAULT FALSE,
+    
+    note TEXT,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_calibrations_account_date ON calibrations(account_id, date DESC);
+
+-- ----------------------------------------------------------------------------
+-- 1.5 周期任务表 (periodic_tasks)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS periodic_tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+    -- 复式记账：资金流向
+    from_account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    to_account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    
+    -- 金额
+    amount DECIMAL(20, 4) NOT NULL CHECK (amount > 0),
+    
+    -- 跨币种支持
+    from_amount DECIMAL(20, 4),
+    to_amount DECIMAL(20, 4),
+    
+    -- 描述
+    description TEXT,
+    
+    -- 周期设置
+    frequency TEXT NOT NULL DEFAULT 'monthly',
+    next_run_date DATE NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    
+    -- 附加属性（对标 transactions 表）
+    location TEXT,                                     -- 发生地
+    project_id UUID REFERENCES projects(id) ON DELETE SET NULL,  -- 所属项目
+    is_starred BOOLEAN NOT NULL DEFAULT FALSE,         -- 重要标记
+    needs_review BOOLEAN NOT NULL DEFAULT FALSE,       -- 待核对标记
+    
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    
+    -- 约束
+    CONSTRAINT chk_periodic_different_accounts CHECK (from_account_id != to_account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_periodic_tasks_next_run ON periodic_tasks(next_run_date) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_periodic_tasks_project ON periodic_tasks(project_id) WHERE project_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_periodic_tasks_starred ON periodic_tasks(is_starred) WHERE is_starred = true;
+
+-- ----------------------------------------------------------------------------
+-- 1.6 对账问题表 (reconciliation_issues)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS reconciliation_issues (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    start_calibration_id UUID REFERENCES calibrations(id) ON DELETE SET NULL,
+    end_calibration_id UUID REFERENCES calibrations(id) ON DELETE SET NULL,
     period_start TIMESTAMP WITH TIME ZONE NOT NULL,
     period_end TIMESTAMP WITH TIME ZONE NOT NULL,
-    expected_delta DECIMAL(20, 4) NOT NULL,
-    actual_delta DECIMAL(20, 4) NOT NULL,
-    diff DECIMAL(20, 4) NOT NULL,
-    status TEXT NOT NULL DEFAULT 'open', -- open / resolved
-    source TEXT NOT NULL DEFAULT 'manual', -- manual / snapshot
+    expected_delta DECIMAL(20, 4) NOT NULL,  -- 校准差值 (end - start)
+    actual_delta DECIMAL(20, 4) NOT NULL,    -- 流水和
+    diff DECIMAL(20, 4) NOT NULL,            -- 差异 (actual - expected)
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved', 'ignored')),
+    source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'calibration', 'auto')),
     metadata JSONB,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     resolved_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_unique_pair
-    ON reconciliation_issues(account_id, start_snapshot_id, end_snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_reconciliation_account ON reconciliation_issues(account_id);
+CREATE INDEX IF NOT EXISTS idx_reconciliation_status ON reconciliation_issues(status);
 
-CREATE INDEX IF NOT EXISTS idx_reconciliation_status
-    ON reconciliation_issues(status);
+-- ============================================================================
+-- 第二部分：缓存和配置表
+-- ============================================================================
 
+-- ----------------------------------------------------------------------------
+-- 2.1 统计缓存表 (statistics_cache)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS statistics_cache (
+    id TEXT PRIMARY KEY,
+    data JSONB NOT NULL,
+    account_id UUID REFERENCES accounts(id) ON DELETE CASCADE,
+    period_start DATE,
+    period_end DATE,
+    computed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    valid_until TIMESTAMP WITH TIME ZONE,
+    cache_type TEXT NOT NULL DEFAULT 'general'
+);
+
+CREATE INDEX IF NOT EXISTS idx_stats_cache_account ON statistics_cache(account_id) WHERE account_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_stats_cache_type ON statistics_cache(cache_type);
+CREATE INDEX IF NOT EXISTS idx_stats_cache_valid ON statistics_cache(valid_until) WHERE valid_until IS NOT NULL;
+
+-- ----------------------------------------------------------------------------
+-- 2.2 记账设置表 (bookkeeping_settings)
+-- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS bookkeeping_settings (
-    id BOOLEAN PRIMARY KEY DEFAULT TRUE, -- 只保留一行，id 恒为 true
+    id BOOLEAN PRIMARY KEY DEFAULT TRUE,
     thousand_separator BOOLEAN NOT NULL DEFAULT TRUE,
     decimal_places INTEGER NOT NULL DEFAULT 2,
     default_currency TEXT NOT NULL DEFAULT 'CNY',
-    auto_snapshot_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    snapshot_interval_days INTEGER NOT NULL DEFAULT 30,
-    snapshot_tolerance DECIMAL(20, 4) NOT NULL DEFAULT 1.00,
+    
+    -- 强制校准设置
+    calibration_reminder_enabled BOOLEAN NOT NULL DEFAULT TRUE,  -- 是否启用强制校准提醒
+    calibration_interval_days INTEGER NOT NULL DEFAULT 30,       -- 校准间隔天数
+    
+    -- 颜色配置
     expense_color TEXT NOT NULL DEFAULT '#ef4444',
     income_color TEXT NOT NULL DEFAULT '#22c55e',
     transfer_color TEXT NOT NULL DEFAULT '#0ea5e9',
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT timezone('utc'::text, now())
+    
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
--- 7. Tags
-CREATE TABLE IF NOT EXISTS bookkeeping_tags (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    kind TEXT NOT NULL CHECK (kind IN ('expense', 'income', 'transfer')),
-    name TEXT NOT NULL,
-    description TEXT,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT timezone('utc'::text, now()),
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT timezone('utc'::text, now())
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_kind_name
-    ON bookkeeping_tags(kind, name);
-
--- 8. Transaction ↔ Tag Links
-CREATE TABLE IF NOT EXISTS transaction_tag_links (
-    transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-    tag_id UUID NOT NULL REFERENCES bookkeeping_tags(id) ON DELETE CASCADE,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT timezone('utc'::text, now()),
-    PRIMARY KEY (transaction_id, tag_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_tag_links_tag
-    ON transaction_tag_links(tag_id);
-
--- 9. Available Tags View
-CREATE OR REPLACE VIEW bookkeeping_available_tags AS
-SELECT
-    t.id,
-    t.kind,
-    t.name,
-    t.is_active,
-    FALSE AS from_settings
-FROM bookkeeping_tags t;
-
--- 10. Daily Check-ins Table (每日打卡表)
--- 记录用户每日打卡，用于触发全局刷新
-CREATE TABLE IF NOT EXISTS daily_checkins (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    check_date DATE NOT NULL UNIQUE, -- 打卡日期（每天只能有一条）
-    checked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT timezone('utc'::text, now()) -- 打卡时间
-);
-
-CREATE INDEX IF NOT EXISTS idx_checkins_date ON daily_checkins(check_date);
-
--- 11. Budget Plans Table (预算计划表)
--- 存储标签预算和总支出预算
-CREATE TABLE IF NOT EXISTS budget_plans (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    
-    -- 计划类型: 'category' (标签预算) / 'total' (总支出预算)
-    plan_type TEXT NOT NULL CHECK (plan_type IN ('category', 'total')),
-    
-    -- 关联标签名称（category 类型必填，total 类型为 NULL）
-    category_name TEXT,
-    
-    -- 周期: weekly / monthly
-    period TEXT NOT NULL DEFAULT 'monthly' CHECK (period IN ('weekly', 'monthly')),
-    
-    -- 刚性约束金额
-    hard_limit DECIMAL(20, 4) NOT NULL,
-    -- 约束币种
-    limit_currency TEXT NOT NULL DEFAULT 'CNY',
-    
-    -- 是否启用柔性约束（自动计算前3周期均值）
-    soft_limit_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    
-    -- 计划状态: active / expired / paused
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired', 'paused')),
-    
-    -- 账户筛选模式: 'all' / 'include' / 'exclude'
-    account_filter_mode TEXT NOT NULL DEFAULT 'all' CHECK (account_filter_mode IN ('all', 'include', 'exclude')),
-    -- 账户ID列表（include 或 exclude 模式时使用）
-    account_filter_ids UUID[],
-    
-    -- 计划时效（12个周期）
-    start_date DATE NOT NULL,
-    end_date DATE NOT NULL,
-    
-    -- 总支出计划专用：纳入统计的标签列表
-    included_categories TEXT[],
-    
-    -- 轮次（用于历史记录，每次再启动+1）
-    round_number SMALLINT NOT NULL DEFAULT 1,
-    
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
-);
-
--- 确保只有一个 total 类型的计划
-CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_plans_total_unique 
-    ON budget_plans(plan_type) WHERE plan_type = 'total' AND status != 'expired';
-
--- 确保每个标签只有一个活跃计划
-CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_plans_category_unique 
-    ON budget_plans(category_name) WHERE plan_type = 'category' AND status = 'active';
-
-CREATE INDEX IF NOT EXISTS idx_budget_plans_status ON budget_plans(status);
-
--- 12. Budget Period Records Table (预算周期执行记录表)
--- 记录每个周期的执行情况，用于 12 个指示灯
-CREATE TABLE IF NOT EXISTS budget_period_records (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    plan_id UUID NOT NULL REFERENCES budget_plans(id) ON DELETE CASCADE,
-    
-    -- 轮次（与 plan 的 round_number 对应）
-    round_number SMALLINT NOT NULL,
-    
-    -- 周期序号（1-12）
-    period_index SMALLINT NOT NULL CHECK (period_index >= 1 AND period_index <= 12),
-    
-    -- 周期时间范围
-    period_start DATE NOT NULL,
-    period_end DATE NOT NULL,
-    
-    -- 实际消费金额（换算到约束币种后）
-    actual_amount DECIMAL(20, 4),
-    
-    -- 约束线快照（记录当时的设置，因为可能被修改）
-    hard_limit DECIMAL(20, 4) NOT NULL,
-    soft_limit DECIMAL(20, 4), -- 前3个周期为 NULL
-    
-    -- 指示灯状态: star / green / red / pending
-    indicator_status TEXT NOT NULL DEFAULT 'pending' CHECK (indicator_status IN ('star', 'green', 'red', 'pending')),
-    
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
-);
-
-CREATE INDEX IF NOT EXISTS idx_budget_period_records_plan ON budget_period_records(plan_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_period_records_unique 
-    ON budget_period_records(plan_id, round_number, period_index);
-
--- 13. Currency Rates Table (汇率表)
--- 用于跨币种预算计算
+-- ----------------------------------------------------------------------------
+-- 2.3 汇率表 (currency_rates)
+-- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS currency_rates (
     from_currency TEXT NOT NULL,
     to_currency TEXT NOT NULL,
-    rate DECIMAL(20, 8) NOT NULL, -- 1 from_currency = rate to_currency
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+    rate DECIMAL(20, 8) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     PRIMARY KEY (from_currency, to_currency)
 );
 
@@ -279,7 +322,313 @@ INSERT INTO currency_rates (from_currency, to_currency, rate) VALUES
     ('USD', 'HKD', 7.78)
 ON CONFLICT (from_currency, to_currency) DO UPDATE SET rate = EXCLUDED.rate;
 
--- Indexes for better performance
-CREATE INDEX IF NOT EXISTS idx_transactions_account_date ON transactions(account_id, date);
-CREATE INDEX IF NOT EXISTS idx_snapshots_account_date ON snapshots(account_id, date);
-CREATE INDEX IF NOT EXISTS idx_periodic_tasks_next_run ON periodic_tasks(next_run_date);
+-- ============================================================================
+-- 第三部分：辅助功能表
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- 3.1 操作日志表 (operation_logs)
+-- 用途：记录导入/导出/回滚等操作历史
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS operation_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    
+    type TEXT NOT NULL CHECK (type IN ('import', 'export', 'rollback')),
+    status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('completed', 'failed', 'rolled_back')),
+    
+    filename TEXT,
+    total_rows INTEGER,
+    
+    -- JSONB 详情字段
+    rows_valid_uploaded JSONB,
+    rows_valid_skipped JSONB,
+    rows_duplicate_uploaded JSONB,
+    rows_duplicate_skipped JSONB,
+    rows_error JSONB,
+    
+    -- 回滚状态
+    is_rolled_back BOOLEAN DEFAULT FALSE,
+    rolled_back_at TIMESTAMP WITH TIME ZONE,
+    
+    -- 关联数据
+    transaction_ids UUID[],
+    
+    -- 导出配置 (Export specific)
+    export_config JSONB,
+    
+    -- 关联日志 (e.g. Rollback log pointing to Import log)
+    target_log_id UUID REFERENCES operation_logs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_logs_created_at ON operation_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_type ON operation_logs(type);
+
+
+-- ----------------------------------------------------------------------------
+-- 3.2 每日打卡表 (daily_checkins)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS daily_checkins (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    check_date DATE NOT NULL UNIQUE,
+    checked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_checkins_date ON daily_checkins(check_date);
+
+-- ============================================================================
+-- 第四部分：预算系统表
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- 4.1 预算计划表 (budget_plans)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS budget_plans (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    plan_type TEXT NOT NULL CHECK (plan_type IN ('category', 'total')),
+    category_account_id UUID REFERENCES accounts(id) ON DELETE SET NULL,  -- 关联费用账户（标签）
+    period TEXT NOT NULL DEFAULT 'monthly' CHECK (period IN ('weekly', 'monthly')),
+    hard_limit DECIMAL(20, 4) NOT NULL,
+    limit_currency TEXT NOT NULL DEFAULT 'CNY',
+    soft_limit_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired', 'paused')),
+    account_filter_mode TEXT NOT NULL DEFAULT 'all' CHECK (account_filter_mode IN ('all', 'include', 'exclude')),
+    account_filter_ids UUID[],
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    included_category_ids UUID[],  -- 纳入统计的费用账户ID列表（total类型时使用）
+    round_number SMALLINT NOT NULL DEFAULT 1,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_plans_total_unique 
+    ON budget_plans(plan_type) WHERE plan_type = 'total' AND status != 'expired';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_plans_category_unique 
+    ON budget_plans(category_account_id) WHERE plan_type = 'category' AND status = 'active';
+CREATE INDEX IF NOT EXISTS idx_budget_plans_status ON budget_plans(status);
+CREATE INDEX IF NOT EXISTS idx_budget_plans_category ON budget_plans(category_account_id) WHERE category_account_id IS NOT NULL;
+
+-- ----------------------------------------------------------------------------
+-- 4.2 预算周期记录表 (budget_period_records)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS budget_period_records (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    plan_id UUID NOT NULL REFERENCES budget_plans(id) ON DELETE CASCADE,
+    round_number SMALLINT NOT NULL,
+    period_index SMALLINT NOT NULL CHECK (period_index >= 1 AND period_index <= 12),
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    actual_amount DECIMAL(20, 4),
+    hard_limit DECIMAL(20, 4) NOT NULL,
+    soft_limit DECIMAL(20, 4),
+    indicator_status TEXT NOT NULL DEFAULT 'pending' CHECK (indicator_status IN ('star', 'green', 'red', 'pending')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_budget_period_records_plan ON budget_period_records(plan_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_period_records_unique 
+    ON budget_period_records(plan_id, round_number, period_index);
+
+-- ============================================================================
+-- 第五部分：视图
+-- ============================================================================
+
+-- 标签视图（用于前端兼容，将虚账户展示为"标签"）
+CREATE OR REPLACE VIEW tags_view AS
+SELECT 
+    id,
+    name,
+    CASE type
+        WHEN 'expense' THEN 'expense'
+        WHEN 'income' THEN 'income'
+        ELSE 'transfer'
+    END AS kind,
+    is_active,
+    parent_id,
+    full_path,
+    sort_order
+FROM accounts
+WHERE account_class = 'nominal' 
+  AND type IN ('expense', 'income')
+  AND is_group = false;
+
+-- 真实账户视图（用于账户选择器）
+CREATE OR REPLACE VIEW real_accounts_view AS
+SELECT 
+    id,
+    parent_id,
+    name,
+    type,
+    subtype,
+    currency,
+    is_group,
+    is_active,
+    full_path,
+    credit_limit,
+    statement_day,
+    due_day,
+    sort_order
+FROM accounts
+WHERE account_class = 'real'
+  AND is_group = false;
+
+-- 账户余额视图（基于复式记账计算）
+CREATE OR REPLACE VIEW account_balances_view AS
+SELECT 
+    a.id AS account_id,
+    a.name,
+    a.type,
+    a.currency,
+    COALESCE(
+        (SELECT SUM(COALESCE(t.to_amount, t.amount)) 
+         FROM transactions t 
+         WHERE t.to_account_id = a.id),
+        0
+    ) - COALESCE(
+        (SELECT SUM(COALESCE(t.from_amount, t.amount)) 
+         FROM transactions t 
+         WHERE t.from_account_id = a.id),
+        0
+    ) AS balance
+FROM accounts a
+WHERE a.account_class = 'real'
+  AND a.is_group = false;
+
+-- ============================================================================
+-- 第六部分：触发器
+-- ============================================================================
+
+-- 更新 updated_at 时间戳
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS tr_accounts_updated_at ON accounts;
+CREATE TRIGGER tr_accounts_updated_at
+    BEFORE UPDATE ON accounts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+DROP TRIGGER IF EXISTS tr_transactions_updated_at ON transactions;
+CREATE TRIGGER tr_transactions_updated_at
+    BEFORE UPDATE ON transactions
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+DROP TRIGGER IF EXISTS tr_projects_updated_at ON projects;
+CREATE TRIGGER tr_projects_updated_at
+    BEFORE UPDATE ON projects
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+DROP TRIGGER IF EXISTS tr_periodic_tasks_updated_at ON periodic_tasks;
+CREATE TRIGGER tr_periodic_tasks_updated_at
+    BEFORE UPDATE ON periodic_tasks
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- 缓存失效触发器
+CREATE OR REPLACE FUNCTION invalidate_statistics_cache()
+RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE statistics_cache 
+    SET valid_until = NOW()
+    WHERE account_id IN (
+        COALESCE(NEW.from_account_id, OLD.from_account_id),
+        COALESCE(NEW.to_account_id, OLD.to_account_id)
+    ) OR account_id IS NULL;
+    
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS tr_transactions_cache_invalidate ON transactions;
+CREATE TRIGGER tr_transactions_cache_invalidate
+    AFTER INSERT OR UPDATE OR DELETE ON transactions
+    FOR EACH ROW EXECUTE FUNCTION invalidate_statistics_cache();
+
+-- 自动更新 full_path
+CREATE OR REPLACE FUNCTION update_account_full_path()
+RETURNS TRIGGER AS $$
+DECLARE
+    parent_path TEXT;
+BEGIN
+    IF NEW.parent_id IS NULL THEN
+        NEW.full_path = NEW.name;
+    ELSE
+        SELECT full_path INTO parent_path FROM accounts WHERE id = NEW.parent_id;
+        NEW.full_path = parent_path || ':' || NEW.name;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS tr_accounts_full_path ON accounts;
+CREATE TRIGGER tr_accounts_full_path
+    BEFORE INSERT OR UPDATE OF name, parent_id ON accounts
+    FOR EACH ROW EXECUTE FUNCTION update_account_full_path();
+
+-- ============================================================================
+-- 第七部分：系统账户初始化
+-- ============================================================================
+
+-- 顶层系统账户（5大类）
+INSERT INTO accounts (id, name, account_class, type, is_group, is_system, full_path, sort_order) VALUES
+    ('00000000-0000-0000-0000-000000000001', '资产', 'real', 'asset', true, true, '资产', 1),
+    ('00000000-0000-0000-0000-000000000002', '负债', 'real', 'liability', true, true, '负债', 2),
+    ('00000000-0000-0000-0000-000000000003', '收入', 'nominal', 'income', true, true, '收入', 3),
+    ('00000000-0000-0000-0000-000000000004', '费用', 'nominal', 'expense', true, true, '费用', 4),
+    ('00000000-0000-0000-0000-000000000005', '权益', 'nominal', 'equity', true, true, '权益', 5)
+ON CONFLICT (id) DO NOTHING;
+
+-- 权益下的系统账户：期初余额
+INSERT INTO accounts (id, parent_id, name, account_class, type, is_group, is_system, full_path, sort_order) VALUES
+    ('00000000-0000-0000-0000-000000000006', '00000000-0000-0000-0000-000000000005', '期初余额', 'nominal', 'equity', false, true, '权益:期初余额', 1)
+ON CONFLICT (id) DO NOTHING;
+
+-- 常用费用类别
+INSERT INTO accounts (parent_id, name, account_class, type, is_group, is_system, full_path, sort_order) 
+SELECT '00000000-0000-0000-0000-000000000004', name, 'nominal', 'expense', false, false, '费用:' || name, sort_order
+FROM (VALUES 
+    ('餐饮', 1), ('交通', 2), ('购物', 3), ('娱乐', 4), ('居住', 5),
+    ('医疗', 6), ('教育', 7), ('通讯', 8), ('人情', 9), ('其他支出', 99)
+) AS t(name, sort_order)
+WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE full_path = '费用:' || t.name);
+
+-- 常用收入类别
+INSERT INTO accounts (parent_id, name, account_class, type, is_group, is_system, full_path, sort_order) 
+SELECT '00000000-0000-0000-0000-000000000003', name, 'nominal', 'income', false, false, '收入:' || name, sort_order
+FROM (VALUES 
+    ('工资', 1), ('奖金', 2), ('投资收益', 3), ('报销', 4), ('代付回款', 5), ('其他收入', 99)
+) AS t(name, sort_order)
+WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE full_path = '收入:' || t.name);
+
+-- ============================================================================
+-- 第八部分：RLS 策略
+-- ============================================================================
+
+ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calibrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE periodic_tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reconciliation_issues ENABLE ROW LEVEL SECURITY;
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE statistics_cache ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all for accounts" ON accounts;
+DROP POLICY IF EXISTS "Allow all for transactions" ON transactions;
+DROP POLICY IF EXISTS "Allow all for calibrations" ON calibrations;
+DROP POLICY IF EXISTS "Allow all for periodic_tasks" ON periodic_tasks;
+DROP POLICY IF EXISTS "Allow all for reconciliation_issues" ON reconciliation_issues;
+DROP POLICY IF EXISTS "Allow all for projects" ON projects;
+DROP POLICY IF EXISTS "Allow all for statistics_cache" ON statistics_cache;
+
+CREATE POLICY "Allow all for accounts" ON accounts FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for transactions" ON transactions FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for calibrations" ON calibrations FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for periodic_tasks" ON periodic_tasks FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for reconciliation_issues" ON reconciliation_issues FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for projects" ON projects FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for statistics_cache" ON statistics_cache FOR ALL USING (true) WITH CHECK (true);
+

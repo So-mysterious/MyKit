@@ -1,3 +1,9 @@
+/**
+ * [性质]: [页面] 预算管理 (新建/编辑/查看预算)
+ * [Input]: None
+ * [Output]: Page UI
+ * [警告]: 试图对本文件进行任何修改前，必须阅读开头注释部分；而一旦本文件被更新，必须立刻检查开头注释是否需要更新，必须立刻检查本文件所属的所有上级目录是否需要被更新。
+ */
 "use client";
 
 import * as React from "react";
@@ -17,6 +23,7 @@ import {
   Wallet,
   ChevronDown,
   ChevronUp,
+  Info,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,13 +35,9 @@ import {
   toggleBudgetPlanStatus,
   restartBudgetPlan,
   BudgetPlanWithRecords,
-  recalculateAllBudgetPeriods,
-  commitBudgetRecalculations,
-  BudgetRecalculationItem,
 } from "@/lib/bookkeeping/actions";
 import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
 import { useBookkeepingColors } from "@/lib/bookkeeping/useColors";
-import { BudgetRecalcDialog } from "@/components/BudgetRecalcDialog";
 
 // 周期选项
 const PERIOD_OPTIONS = [
@@ -93,18 +96,47 @@ export default function BudgetPage() {
   const [showNewCategoryForm, setShowNewCategoryForm] = React.useState(false); // 新建标签预算表单
   const [editingPlanId, setEditingPlanId] = React.useState<string | null>(null); // 正在编辑的计划ID（包括总支出和标签）
   const [expandedPlanId, setExpandedPlanId] = React.useState<string | null>(null);
+  const [showInfoModal, setShowInfoModal] = React.useState(false);
   const [form, setForm] = React.useState<FormState>(initialFormState);
   const [error, setError] = React.useState<string | null>(null);
 
-  // 重算相关状态 
-  const [recalculating, setRecalculating] = React.useState(false);
-  const [recalcReport, setRecalcReport] = React.useState<BudgetRecalculationItem[] | null>(null);
-  const [showRecalcDialog, setShowRecalcDialog] = React.useState(false);
-  const [commitingRecalc, setCommitingRecalc] = React.useState(false);
+  // 格式化账户显示名称（包含父路径）
+  const getAccountDisplayName = React.useCallback((account: any): string => {
+    const currencySet = new Set(['CNY', 'USD', 'HKD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'SGD', 'TWD', 'KRW', 'THB', 'MYR', 'PHP', 'INR', 'RUB', 'BRL', 'MXN', 'ZAR']);
 
-  // 获取支出和划转标签
-  const expenseAndTransferTags = React.useMemo(() => {
-    return tags.filter(t => t.kind === "expense" || t.kind === "transfer");
+    if (currencySet.has(account.name) && account.full_path) {
+      const parts = account.full_path.split(':');
+      if (parts.length >= 2) {
+        const parentName = parts[parts.length - 2];
+        return `${parentName} ${account.name}`;
+      }
+    }
+    return `${account.name}${account.currency ? ` (${account.currency})` : ''}`;
+  }, []);
+
+  // 展平后的实账户列表
+  const flattenedRealAccounts = React.useMemo(() => {
+    const result: Array<{ id: string; displayName: string }> = [];
+    const flatten = (accs: any[]) => {
+      accs.forEach(acc => {
+        if (!acc.is_group && (acc.type === 'asset' || acc.type === 'liability')) {
+          result.push({
+            id: acc.id,
+            displayName: getAccountDisplayName(acc)
+          });
+        }
+        if (acc.children && acc.children.length) {
+          flatten(acc.children);
+        }
+      });
+    };
+    flatten(accounts);
+    return result;
+  }, [accounts, getAccountDisplayName]);
+
+  // 获取支出标签（仅限支出）
+  const expenseTags = React.useMemo(() => {
+    return tags.filter(t => t.kind === "expense");
   }, [tags]);
 
   // 加载数据 (使用缓存)
@@ -113,12 +145,11 @@ export default function BudgetPage() {
     setError(null);
     try {
       const [plansData, accountsData, tagsData] = await Promise.all([
-        cache.getBudgetPlans({ includeRecords: true }), // ✅ 使用缓存
-        cache.getAccounts({ includeBalance: false }), // ✅ 使用缓存
-        cache.getTags(), // ✅ 使用缓存
+        cache.getBudgetPlans({ includeRecords: true }),
+        cache.getAccounts({ includeBalance: false }),
+        cache.getTags(),
       ]);
 
-      // 分离标签计划和总支出计划
       const categoryPlans = plansData.filter(p => p.plan_type === "category");
       const totalPlanData = plansData.find(p => p.plan_type === "total") || null;
 
@@ -132,7 +163,7 @@ export default function BudgetPage() {
     } finally {
       setLoading(false);
     }
-  }, [cache.getBudgetPlans, cache.getAccounts, cache.getTags]); // ✅ 只依赖稳定的函数
+  }, [cache.getBudgetPlans, cache.getAccounts, cache.getTags]);
 
   React.useEffect(() => {
     loadData();
@@ -152,14 +183,14 @@ export default function BudgetPage() {
     setShowNewCategoryForm(false); // 关闭新建表单
     setForm({
       planType: plan.plan_type,
-      categoryName: plan.category_name || "",
+      categoryName: plan.category_account_id || "",
       period: plan.period,
       hardLimit: String(plan.hard_limit),
       limitCurrency: plan.limit_currency,
       softLimitEnabled: plan.soft_limit_enabled,
       accountFilterMode: plan.account_filter_mode,
       accountFilterIds: plan.account_filter_ids || [],
-      includedCategories: plan.included_categories || [],
+      includedCategories: plan.included_category_ids || [],
       startDate: plan.start_date,
     });
     setError(null);
@@ -195,34 +226,43 @@ export default function BudgetPage() {
     setSaving(true);
     setError(null);
 
-    try {
-      const isNewPlan = editingPlanId === "new-total" || showNewCategoryForm;
+    // 乐观更新所需数据
+    const isNewPlan = editingPlanId === "new-total" || showNewCategoryForm;
+    const oldPlans = [...plans];
+    const oldTotalPlan = totalPlan;
 
+    try {
       if (!isNewPlan && editingPlanId) {
-        // 更新计划
+        // 更新计划 - 先乐观更新界面状态
+        if (form.planType === 'total' && totalPlan) {
+          setTotalPlan({ ...totalPlan, hard_limit: parseFloat(form.hardLimit) } as any);
+        } else {
+          setPlans(prev => prev.map(p => p.id === editingPlanId ? { ...p, hard_limit: parseFloat(form.hardLimit) } as any : p));
+        }
+
         await updateBudgetPlan(editingPlanId, {
           hard_limit: parseFloat(form.hardLimit),
           soft_limit_enabled: form.softLimitEnabled,
           account_filter_mode: form.accountFilterMode,
           account_filter_ids: form.accountFilterIds.length > 0 ? form.accountFilterIds : null,
-          included_categories: form.includedCategories.length > 0 ? form.includedCategories : null,
+          included_category_ids: form.includedCategories.length > 0 ? form.includedCategories : null,
         });
       } else {
         // 创建计划
         await createBudgetPlan({
           plan_type: form.planType,
-          category_name: form.planType === "category" ? form.categoryName : undefined,
+          category_account_id: form.planType === "category" ? form.categoryName : undefined,
           period: form.period,
           hard_limit: parseFloat(form.hardLimit),
           limit_currency: form.limitCurrency,
           soft_limit_enabled: form.softLimitEnabled,
           account_filter_mode: form.accountFilterMode,
           account_filter_ids: form.accountFilterIds.length > 0 ? form.accountFilterIds : undefined,
-          included_categories: form.planType === "total" && form.includedCategories.length > 0
+          included_category_ids: form.planType === "total" && form.includedCategories.length > 0
             ? form.includedCategories
             : undefined,
           start_date: form.startDate,
-        });
+        } as any);
       }
 
       // ✅ 失效并刷新缓存
@@ -231,6 +271,9 @@ export default function BudgetPage() {
       await loadData();
     } catch (err) {
       console.error("Failed to save budget plan:", err);
+      // 回退并报错
+      setPlans(oldPlans);
+      setTotalPlan(oldTotalPlan);
       setError(err instanceof Error ? err.message : "保存失败");
     } finally {
       setSaving(false);
@@ -239,12 +282,23 @@ export default function BudgetPage() {
 
   // 切换计划状态
   const handleToggleStatus = async (plan: BudgetPlanWithRecords) => {
+    const isTotal = plan.plan_type === 'total';
+    const newStatus = plan.status === "active" ? "paused" : "active";
+
+    // 乐观更新
+    if (isTotal) {
+      setTotalPlan((prev: BudgetPlanWithRecords | null) => prev ? ({ ...prev, status: newStatus } as any) : null);
+    } else {
+      setPlans(prev => prev.map(p => p.id === plan.id ? ({ ...p, status: newStatus } as any) : p));
+    }
+
     try {
-      const newStatus = plan.status === "active" ? "paused" : "active";
       await toggleBudgetPlanStatus(plan.id, newStatus);
-      await loadData();
+      await cache.invalidateAndRefresh(['budgetPlans', 'dashboardBudgetData']);
     } catch (err) {
       console.error("Failed to toggle plan status:", err);
+      // 回退
+      await loadData();
       setError(err instanceof Error ? err.message : "操作失败");
     }
   };
@@ -253,6 +307,7 @@ export default function BudgetPage() {
   const handleRestart = async (plan: BudgetPlanWithRecords) => {
     try {
       await restartBudgetPlan(plan.id);
+      await cache.invalidateAndRefresh(['budgetPlans', 'dashboardBudgetData']);
       await loadData();
     } catch (err) {
       console.error("Failed to restart plan:", err);
@@ -264,6 +319,10 @@ export default function BudgetPage() {
   const handleDelete = async (planId: string) => {
     if (!confirm("确定要删除这个预算计划吗？")) return;
 
+    // 乐观更新
+    const oldPlans = [...plans];
+    setPlans(prev => prev.filter(p => p.id !== planId));
+
     try {
       await deleteBudgetPlan(planId);
       // ✅ 失效并刷新缓存
@@ -271,63 +330,19 @@ export default function BudgetPage() {
       await loadData();
     } catch (err) {
       console.error("Failed to delete plan:", err);
+      setPlans(oldPlans);
       setError(err instanceof Error ? err.message : "删除失败");
-    }
-  };
-
-  // 重算所有预算
-  const handleRecalculate = async () => {
-    if (!confirm('重算所有预算周期可能需要较长时间（约5-10秒），确定要继续吗？')) {
-      return;
-    }
-
-    setRecalculating(true);
-    try {
-      const results = await recalculateAllBudgetPeriods();
-
-      if (results.length === 0) {
-        alert('所有预算数据已是最新，无需修正');
-        return;
-      }
-
-      setRecalcReport(results);
-      setShowRecalcDialog(true);
-    } catch (err) {
-      console.error(err);
-      alert('重算失败：' + (err instanceof Error ? err.message : '未知错误'));
-    } finally {
-      setRecalculating(false);
-    }
-  };
-
-  // 提交重算结果
-  const handleCommitRecalc = async () => {
-    if (!recalcReport) return;
-
-    setCommitingRecalc(true);
-    try {
-      await commitBudgetRecalculations(recalcReport);
-      await cache.invalidateAndRefresh(['budgetPlans', 'dashboardBudgetData']);
-      alert(`成功修正 ${recalcReport.length} 个周期的数据`);
-      setShowRecalcDialog(false);
-      setRecalcReport(null);
-      await loadData();
-    } catch (err) {
-      console.error(err);
-      alert('提交失败，数据未修改：' + (err instanceof Error ? err.message : '未知错误'));
-    } finally {
-      setCommitingRecalc(false);
     }
   };
 
   // 获取账户名称
   const getAccountName = (accountId: string) => {
-    const account = accounts.find(a => a.id === accountId);
-    return account ? `${account.name} (${account.currency})` : accountId;
+    const acc = flattenedRealAccounts.find(a => a.id === accountId);
+    return acc ? acc.displayName : accountId;
   };
 
-  // 统一的选择框样式（与 Input 等高）
-  const selectClassName = "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50";
+  // 统一的选择框样式（取消厚重的黑色边框，统一风格）
+  const selectClassName = "flex h-10 w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50 appearance-none bg-[url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20width%3D%2220%22%20height%3D%2220%22%20viewBox%3D%220%200%2020%2020%22%20fill%3D%22none%22%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%3E%3Cpath%20d%3D%22M7%207L10%204L13%207%22%20stroke%3D%22%236B7280%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22/%3E%3Cpath%20d%3D%22M7%2013L10%2016L13%2013%22%20stroke%3D%22%236B7280%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22/%3E%3C/svg%3E')] bg-[length:20px_20px] bg-[right_0.5rem_center] bg-no-repeat pr-10";
 
   // 渲染编辑表单（内联）
   const renderEditForm = (isTotal: boolean, isNew: boolean) => (
@@ -351,9 +366,9 @@ export default function BudgetPage() {
             onChange={(e) => setForm({ ...form, categoryName: e.target.value })}
           >
             <option value="">请选择...</option>
-            {expenseAndTransferTags.map((tag) => (
-              <option key={tag.name} value={tag.name}>
-                {tag.name} ({tag.kind === "expense" ? "支出" : "划转"})
+            {expenseTags.map((tag: any) => (
+              <option key={tag.id} value={tag.id}>
+                {tag.name}
               </option>
             ))}
           </select>
@@ -365,7 +380,7 @@ export default function BudgetPage() {
         <div className="space-y-2">
           <Label>标签</Label>
           <div className="flex h-10 w-full items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm text-gray-600">
-            {form.categoryName}
+            {tags.find(t => (t as any).id === form.categoryName)?.name || form.categoryName}
           </div>
         </div>
       )}
@@ -475,12 +490,12 @@ export default function BudgetPage() {
 
         {form.accountFilterMode !== "all" && (
           <div className="flex flex-wrap gap-2 mt-3">
-            {accounts.map((acc) => (
+            {flattenedRealAccounts.map((acc) => (
               <label
                 key={acc.id}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer text-sm transition-colors ${form.accountFilterIds.includes(acc.id)
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-gray-200 hover:border-gray-300 text-gray-700"
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer text-sm transition-all ${form.accountFilterIds.includes(acc.id)
+                  ? "bg-blue-600 border-blue-600 text-white shadow-sm"
+                  : "border-gray-200 hover:border-blue-300 text-gray-700 bg-white"
                   }`}
               >
                 <input
@@ -495,8 +510,7 @@ export default function BudgetPage() {
                     }
                   }}
                 />
-                {acc.name}
-                <span className="text-xs opacity-60">({acc.currency})</span>
+                {acc.displayName}
               </label>
             ))}
           </div>
@@ -509,23 +523,23 @@ export default function BudgetPage() {
           <Label>纳入统计的标签</Label>
           <p className="text-xs text-gray-500">不选择则统计全部支出和划转标签</p>
           <div className="flex flex-wrap gap-2 mt-3">
-            {expenseAndTransferTags.map((tag) => (
+            {expenseTags.map((tag: any) => (
               <label
-                key={tag.name}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer text-sm transition-colors ${form.includedCategories.includes(tag.name)
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-gray-200 hover:border-gray-300 text-gray-700"
+                key={tag.id}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer text-sm transition-all ${form.includedCategories.includes(tag.id)
+                  ? "bg-blue-600 border-blue-600 text-white shadow-sm"
+                  : "border-gray-200 hover:border-blue-300 text-gray-700 bg-white"
                   }`}
               >
                 <input
                   type="checkbox"
                   className="hidden"
-                  checked={form.includedCategories.includes(tag.name)}
+                  checked={form.includedCategories.includes(tag.id)}
                   onChange={(e) => {
                     if (e.target.checked) {
-                      setForm({ ...form, includedCategories: [...form.includedCategories, tag.name] });
+                      setForm({ ...form, includedCategories: [...form.includedCategories, tag.id] });
                     } else {
-                      setForm({ ...form, includedCategories: form.includedCategories.filter(c => c !== tag.name) });
+                      setForm({ ...form, includedCategories: form.includedCategories.filter(c => c !== tag.id) });
                     }
                   }}
                 />
@@ -588,7 +602,7 @@ export default function BudgetPage() {
                 <TrendingDown className="w-5 h-5" style={{ color: colors.expense }} />
               )}
               <span className="font-medium">
-                {plan.plan_type === "total" ? "总支出" : plan.category_name}
+                {plan.plan_type === "total" ? "总支出" : tags.find(t => (t as any).id === plan.category_account_id)?.name || "未知标签"}
               </span>
               <span className={`text-xs px-2 py-0.5 rounded-full ${statusBadge.className}`}>
                 {statusBadge.label}
@@ -743,13 +757,13 @@ export default function BudgetPage() {
               <div className="text-sm">
                 <span className="text-gray-500">纳入标签:</span>
                 <div className="flex flex-wrap gap-1 mt-1">
-                  {plan.included_categories && plan.included_categories.length > 0 ? (
-                    plan.included_categories.map((cat) => (
+                  {plan.included_category_ids && plan.included_category_ids.length > 0 ? (
+                    plan.included_category_ids.map((id) => (
                       <span
-                        key={cat}
+                        key={id}
                         className="px-2 py-0.5 bg-gray-100 rounded text-xs"
                       >
-                        {cat}
+                        {tags.find(t => (t as any).id === id)?.name || id}
                       </span>
                     ))
                   ) : (
@@ -797,36 +811,82 @@ export default function BudgetPage() {
   return (
     <div className="space-y-6">
       {/* 页面标题 */}
-      <div className="flex items-start justify-between">
-        <div className="space-y-1">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
-            Budget Management
-          </p>
-          <h1 className="text-2xl font-bold tracking-tight">预算管理</h1>
-          <p className="text-sm text-gray-500">
-            设置和管理各类支出预算计划。预算执行情况请在仪表盘查看。
-          </p>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-6">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
+              Budget Management
+            </p>
+            <h1 className="text-2xl font-bold tracking-tight">预算管理</h1>
+            <p className="text-sm text-gray-500">
+              设置和管理各类支出预算计划。预算执行情况请在仪表盘查看。
+            </p>
+          </div>
+
+          {!loading && (plans.length > 0 || totalPlan) && (
+            <div className="flex items-center gap-4 text-sm">
+              <div className="flex items-center gap-1.5 text-gray-500">
+                <Wallet size={14} />
+                <span>活跃预算: {plans.filter(p => p.status === 'active').length + (totalPlan?.status === 'active' ? 1 : 0)}</span>
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* 重算按钮 */}
-        <Button
-          variant="outline"
-          onClick={handleRecalculate}
-          disabled={recalculating || loading}
+        <button
+          type="button"
+          onClick={() => setShowInfoModal(true)}
+          className="flex items-center justify-center w-9 h-9 rounded-md border border-gray-200 bg-white shadow-sm text-gray-400 hover:text-blue-500 hover:border-blue-400 transition-colors"
+          title="说明信息"
         >
-          {recalculating ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              计算中...
-            </>
-          ) : (
-            <>
-              <RefreshCw className="w-4 h-4 mr-2" />
-              重算所有预算
-            </>
-          )}
-        </Button>
+          <Info size={16} />
+        </button>
       </div>
+
+      {/* 说明模态框 */}
+      {showInfoModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full max-h-[80vh] overflow-y-auto">
+            <div className="p-6 space-y-4">
+              <div className="flex items-center justify-between border-b pb-4">
+                <h2 className="text-lg font-bold flex items-center gap-2">
+                  <Info className="w-5 h-5 text-blue-600" />
+                  预算说明
+                </h2>
+                <Button variant="ghost" size="sm" onClick={() => setShowInfoModal(false)}>
+                  <X className="w-5 h-5" />
+                </Button>
+              </div>
+
+              <div className="space-y-4 text-sm text-gray-600 leading-relaxed">
+                <div>
+                  <h3 className="font-bold text-gray-900 mb-1">刚性约束 (Hard Limit)</h3>
+                  <p>您手动设定的最高消费限制。当实际支出超过此限制时，系统会亮红灯提醒您已严重超支。</p>
+                </div>
+
+                <div>
+                  <h3 className="font-bold text-gray-900 mb-1">柔性约束 (Soft Limit)</h3>
+                  <p>启用后，系统会自动计算自然时间前 3 个周期的消费均值作为动态参考。如果当前支出低于该均值，系统会显示“达标”星号。</p>
+                </div>
+
+                <div>
+                  <h3 className="font-bold text-gray-900 mb-1">跨币种计费逻辑</h3>
+                  <p>预算计划支持单一币种结算。当监控账户发生跨币种交易（例如：港币消费计入人民币预算）时，系统会根据<strong>交易发生当日</strong>的汇率实时折算，保证统计的准确性。</p>
+                </div>
+
+                <div>
+                  <h3 className="font-bold text-gray-900 mb-1">统计口径</h3>
+                  <p>标签预算仅统计以该标签为“去向”的外部支出。总支出预算则汇总所有（或指定）支出标签的流水，不包含内部转账。</p>
+                </div>
+              </div>
+
+              <div className="pt-4 border-t flex justify-end">
+                <Button onClick={() => setShowInfoModal(false)}>我明白了</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 全局错误提示 */}
       {error && !editingPlanId && !showNewCategoryForm && (
@@ -893,17 +953,6 @@ export default function BudgetPage() {
           </div>
         )}
       </div>
-
-      {/* 重算对话框 */}
-      {recalcReport && (
-        <BudgetRecalcDialog
-          open={showRecalcDialog}
-          onOpenChange={setShowRecalcDialog}
-          recalculations={recalcReport}
-          onConfirm={handleCommitRecalc}
-          loading={commitingRecalc}
-        />
-      )}
     </div>
   );
 }

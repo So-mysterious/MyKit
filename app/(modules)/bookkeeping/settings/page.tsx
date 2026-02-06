@@ -1,3 +1,9 @@
+/**
+ * [性质]: [页面] 记账设置中心
+ * [Input]: None
+ * [Output]: Page UI
+ * [警告]: 试图对本文件进行任何修改前，必须阅读开头注释部分；而一旦本文件被更新，必须立刻检查开头注释是否需要更新，必须立刻检查本文件所属的所有上级目录是否需要被更新。
+ */
 "use client";
 
 import * as React from "react";
@@ -12,25 +18,32 @@ import {
   deleteTag,
   updateBookkeepingColors,
   updateBookkeepingSettings,
-  createManualSnapshotsForAllAccounts,
   getExportData,
   updateCurrencyRate,
   BookkeepingKind,
 } from "@/lib/bookkeeping/actions";
 import { useBookkeepingCache } from "@/lib/bookkeeping/cache/BookkeepingCacheProvider";
-import ExportSection from "./components/ExportSection";
+// 移除 ImportSection 和 ExportSection，待后续重建数据管理页
+// import ImportSection from "./components/ImportSection";
+// import ExportSection from "./components/ExportSection";
 import { CurrencyRateRow } from "@/types/database";
 import { Database } from "@/types/database";
-import { Camera, Download, FileSpreadsheet, FileText, RefreshCw, DollarSign } from "lucide-react";
+import { Camera, Download, Upload, FileSpreadsheet, FileText, RefreshCw, DollarSign } from "lucide-react";
 import { formatAmount } from "@/lib/bookkeeping/useSettings";
 
-type TagRow = Database["public"]["Tables"]["bookkeeping_tags"]["Row"];
+type TagRow = {
+  id: string;
+  kind: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  created_at: string;
+};
 type BookkeepingSettingsRow = Database["public"]["Tables"]["bookkeeping_settings"]["Row"];
 
-const KIND_LABEL: Record<BookkeepingKind, string> = {
+const KIND_LABEL: Record<string, string> = {
   expense: "支出",
   income: "收入",
-  transfer: "划转",
 };
 
 const DEFAULT_TAG_FORM = {
@@ -40,11 +53,11 @@ const DEFAULT_TAG_FORM = {
   is_active: true,
 };
 
-const SNAPSHOT_INTERVAL_OPTIONS = [
-  { value: 1, label: "每天" },
+const CALIBRATION_INTERVAL_OPTIONS = [
   { value: 7, label: "每周" },
   { value: 14, label: "每两周" },
   { value: 30, label: "每月" },
+  { value: 90, label: "每季" },
 ];
 
 const DECIMAL_OPTIONS = [
@@ -82,9 +95,8 @@ export default function SettingsPage() {
   const [tempSettings, setTempSettings] = React.useState({
     decimal_places: 2,
     thousand_separator: true,
-    auto_snapshot_enabled: true,
-    snapshot_interval_days: 30,
-    snapshot_tolerance: 0.01,
+    calibration_reminder_enabled: true,
+    calibration_interval_days: 30,
   });
 
   // Tags State
@@ -111,8 +123,6 @@ export default function SettingsPage() {
   // Accounts State (for ExportSection)
   const [accounts, setAccounts] = React.useState<any[]>([]);
 
-
-
   const fetchData = React.useCallback(async () => {
     setLoading(true);
     try {
@@ -131,12 +141,24 @@ export default function SettingsPage() {
       setTempSettings({
         decimal_places: settingsData.decimal_places,
         thousand_separator: settingsData.thousand_separator,
-        auto_snapshot_enabled: settingsData.auto_snapshot_enabled,
-        snapshot_interval_days: settingsData.snapshot_interval_days,
-        snapshot_tolerance: settingsData.snapshot_tolerance,
+        calibration_reminder_enabled: (settingsData as any).calibration_reminder_enabled ?? true,
+        calibration_interval_days: (settingsData as any).calibration_interval_days ?? 30,
       });
       setTags(tagRows);
-      setCurrencyRates(ratesData);
+
+      // 扁平化汇率数据从 Record<from, Record<to, rate>> 到数组
+      const flatRates: any[] = [];
+      Object.entries(ratesData).forEach(([from, targets]) => {
+        Object.entries(targets as Record<string, number>).forEach(([to, rate]) => {
+          flatRates.push({
+            from_currency: from,
+            to_currency: to,
+            rate: rate,
+            updated_at: new Date().toISOString()
+          });
+        });
+      });
+      setCurrencyRates(flatRates);
       setAccounts(accountsData);
     } catch (error) {
       console.error(error);
@@ -203,28 +225,29 @@ export default function SettingsPage() {
         is_active: tagForm.is_active,
       });
       setTagForm(DEFAULT_TAG_FORM);
-      await cache.invalidateAndRefresh(['allTags', 'tags']);
-      // ✅ 从缓存获取最新数据并更新本地状态
-      const freshTags = await cache.getAllTags();
-      setTags(freshTags);
-    } catch (error: any) {
-      console.error('创建标签失败:', error);
-      alert(error.message || "新增标签失败");
+      // 同时失效标签和账户缓存
+      await cache.invalidateAndRefresh(['allTags', 'tags', 'accounts']);
+      await fetchData(); // 强制重新抓取最新数据同步状态
+    } catch (error) {
+      console.error(error);
+      alert("新增标签失败");
     } finally {
       setCreatingTag(false);
     }
   };
-
   const handleToggleTag = async (tag: TagRow) => {
+    // 乐观更新
+    const originalTags = [...tags];
+    setTags(prev => prev.map(t => t.id === tag.id ? { ...t, is_active: !t.is_active } : t));
+
     setUpdatingTagId(tag.id);
     try {
       await updateTag(tag.id, { is_active: !tag.is_active });
-      await cache.invalidateAndRefresh(['allTags', 'tags']);
-      // ✅ 从缓存获取最新数据并更新本地状态
-      const freshTags = await cache.getAllTags();
-      setTags(freshTags);
+      await cache.invalidateAndRefresh(['allTags', 'tags', 'accounts']);
+      await fetchData(); // 补全数据刷新，确保 UI 与缓存最终一致
     } catch (error) {
       console.error(error);
+      setTags(originalTags); // 回滚
       alert("更新标签状态失败");
     } finally {
       setUpdatingTagId(null);
@@ -233,35 +256,21 @@ export default function SettingsPage() {
 
   const handleDeleteTag = async (tag: TagRow) => {
     if (!confirm(`确定删除标签「${tag.name}」吗？`)) return;
+
     setDeletingTagId(tag.id);
     try {
       await deleteTag(tag.id);
-      await cache.invalidateAndRefresh(['allTags', 'tags']);
-      // ✅ 从缓存获取最新数据并更新本地状态
-      const freshTags = await cache.getAllTags();
-      setTags(freshTags);
-    } catch (error) {
+      await cache.invalidateAndRefresh(['allTags', 'tags', 'accounts']);
+      await fetchData(); // 成功后才通过刷新数据使标签消失
+    } catch (error: any) {
       console.error(error);
-      alert("删除标签失败");
+      alert(error.message || "删除标签失败");
     } finally {
       setDeletingTagId(null);
     }
   };
 
-  const handleManualSnapshot = async () => {
-    if (!confirm("确定要为所有账户创建快照吗？")) return;
-    setCreatingSnapshot(true);
-    setSnapshotResult(null);
-    try {
-      const result = await createManualSnapshotsForAllAccounts();
-      setSnapshotResult(`成功创建 ${result.created} 个快照`);
-    } catch (error) {
-      console.error(error);
-      alert("创建快照失败");
-    } finally {
-      setCreatingSnapshot(false);
-    }
-  };
+  // 移除手动快照功能，已替换为校准提醒
 
   const handleExport = async (format: "csv" | "xlsx") => {
     setExporting(true);
@@ -299,12 +308,14 @@ export default function SettingsPage() {
   };
 
   const groupedTags = React.useMemo(() => {
-    return tags.reduce<Record<BookkeepingKind, TagRow[]>>(
+    return tags.reduce<Record<string, TagRow[]>>(
       (acc, row) => {
-        acc[row.kind as BookkeepingKind].push(row);
+        const kind = row.kind as string;
+        if (!acc[kind]) acc[kind] = [];
+        acc[kind].push(row);
         return acc;
       },
-      { expense: [], income: [], transfer: [] }
+      { expense: [], income: [] }
     );
   }, [tags]);
 
@@ -433,15 +444,18 @@ export default function SettingsPage() {
         </div>
 
         <div className="grid gap-6 md:grid-cols-2">
-          {/* Auto Snapshot Toggle */}
+          {/* Calibration Reminder Toggle */}
           <div className="space-y-3">
-            <Label className="text-sm font-medium">自动快照</Label>
+            <Label className="text-sm font-medium">校准提醒</Label>
+            <p className="text-xs text-gray-500">
+              启用后，系统会在账户距上次校准超过设定天数时提醒您进行余额确认。
+            </p>
             <div className="flex gap-2">
               <button
-                onClick={() => setTempSettings(prev => ({ ...prev, auto_snapshot_enabled: true }))}
+                onClick={() => setTempSettings(prev => ({ ...prev, calibration_reminder_enabled: true }))}
                 className={cn(
                   "px-4 py-2 rounded-lg text-sm font-medium transition-all",
-                  tempSettings.auto_snapshot_enabled
+                  tempSettings.calibration_reminder_enabled
                     ? "bg-blue-600 text-white"
                     : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                 )}
@@ -449,10 +463,10 @@ export default function SettingsPage() {
                 启用
               </button>
               <button
-                onClick={() => setTempSettings(prev => ({ ...prev, auto_snapshot_enabled: false }))}
+                onClick={() => setTempSettings(prev => ({ ...prev, calibration_reminder_enabled: false }))}
                 className={cn(
                   "px-4 py-2 rounded-lg text-sm font-medium transition-all",
-                  !tempSettings.auto_snapshot_enabled
+                  !tempSettings.calibration_reminder_enabled
                     ? "bg-gray-900 text-white"
                     : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                 )}
@@ -462,21 +476,24 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Snapshot Interval */}
+          {/* Calibration Interval */}
           <div className="space-y-3">
-            <Label className="text-sm font-medium">快照间隔</Label>
+            <Label className="text-sm font-medium">提醒间隔</Label>
+            <p className="text-xs text-gray-500">
+              设置多长时间未校准时触发提醒。
+            </p>
             <div className="flex gap-2">
-              {SNAPSHOT_INTERVAL_OPTIONS.map(opt => (
+              {CALIBRATION_INTERVAL_OPTIONS.map((opt: { value: number; label: string }) => (
                 <button
                   key={opt.value}
-                  onClick={() => setTempSettings(prev => ({ ...prev, snapshot_interval_days: opt.value }))}
-                  disabled={!tempSettings.auto_snapshot_enabled}
+                  onClick={() => setTempSettings(prev => ({ ...prev, calibration_interval_days: opt.value }))}
+                  disabled={!tempSettings.calibration_reminder_enabled}
                   className={cn(
                     "px-4 py-2 rounded-lg text-sm font-medium transition-all",
-                    tempSettings.snapshot_interval_days === opt.value
+                    tempSettings.calibration_interval_days === opt.value
                       ? "bg-blue-600 text-white"
                       : "bg-gray-100 text-gray-600 hover:bg-gray-200",
-                    !tempSettings.auto_snapshot_enabled && "opacity-50 cursor-not-allowed"
+                    !tempSettings.calibration_reminder_enabled && "opacity-50 cursor-not-allowed"
                   )}
                 >
                   {opt.label}
@@ -486,60 +503,14 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Snapshot Tolerance */}
-        <div className="space-y-3">
-          <Label className="text-sm font-medium">查账容差阈值</Label>
-          <p className="text-xs text-gray-500">
-            当流水与快照的差额小于此值时，不会触发查账提醒。用于忽略微小的精度误差。
+        {/* Calibration Info */}
+        <div className="rounded-xl bg-blue-50 p-4 border border-blue-100">
+          <p className="font-medium text-blue-900">关于账户校准</p>
+          <p className="text-sm text-blue-700 mt-1">
+            校准是您确认账户真实余额的记录。系统会基于最近的校准点计算账户余额，
+            确保您的记账数据与实际账户一致。建议定期校准以保持数据准确性。
           </p>
-          <div className="flex items-center gap-3">
-            <Input
-              type="number"
-              step="0.01"
-              min="0"
-              value={tempSettings.snapshot_tolerance}
-              onChange={(e) => setTempSettings(prev => ({ ...prev, snapshot_tolerance: parseFloat(e.target.value) || 0 }))}
-              className="w-32 font-mono"
-            />
-            <span className="text-sm text-gray-500">元</span>
-            <div className="flex gap-2 ml-4">
-              {[0.01, 0.1, 1, 10].map(val => (
-                <button
-                  key={val}
-                  onClick={() => setTempSettings(prev => ({ ...prev, snapshot_tolerance: val }))}
-                  className={cn(
-                    "px-3 py-1 rounded-md text-xs font-medium transition-all",
-                    tempSettings.snapshot_tolerance === val
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                  )}
-                >
-                  {val}
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
-
-        {/* Manual Snapshot */}
-        <div className="flex items-center justify-between rounded-xl bg-gray-50 p-4 border border-gray-100">
-          <div>
-            <p className="font-medium text-gray-900">立即创建快照</p>
-            <p className="text-sm text-gray-500">为所有账户创建一个手动快照，记录当前余额。</p>
-          </div>
-          <Button
-            onClick={handleManualSnapshot}
-            disabled={creatingSnapshot}
-            variant="outline"
-            className="gap-2"
-          >
-            <Camera size={16} />
-            {creatingSnapshot ? "创建中..." : "创建快照"}
-          </Button>
-        </div>
-        {snapshotResult && (
-          <p className="text-sm text-green-600 bg-green-50 px-4 py-2 rounded-lg">{snapshotResult}</p>
-        )}
       </section>
 
       {/* Color Settings Section */}
@@ -622,6 +593,26 @@ export default function SettingsPage() {
           </div>
         </div>
       </section>
+
+      {/* Data Export/Import Section - 已移除，待建立独立数据管理页 */}
+      {/* 
+      <section className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm space-y-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-purple-600 uppercase tracking-wider">Data Management</p>
+            <h2 className="text-xl font-bold text-gray-900 mt-1">数据导入导出</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              导入外部账单数据或导出您的流水和快照数据。
+            </p>
+          </div>
+        </div>
+
+        <div className="grid gap-6 md:grid-cols-2">
+          <ImportSection />
+          <ExportSection accounts={accounts} />
+        </div>
+      </section>
+      */}
 
       {/* Currency Rates Section */}
       <section className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm space-y-6">
@@ -752,7 +743,7 @@ export default function SettingsPage() {
         </form>
 
         <div className="grid gap-4">
-          {(Object.keys(KIND_LABEL) as BookkeepingKind[]).map((kind) => (
+          {["expense", "income"].map((kind) => (
             <div key={kind} className="rounded-xl border border-gray-100 p-4">
               <div className="flex items-center justify-between mb-3">
                 <div>
@@ -815,8 +806,6 @@ export default function SettingsPage() {
           设置数据加载中...
         </div>
       )}
-
-
     </div>
   );
 }
